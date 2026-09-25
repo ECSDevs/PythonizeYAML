@@ -1,0 +1,7 @@
+name: example
+server:
+  host: localhost
+  port: 8080
+  options:
+    debug: true
+    retries: 3

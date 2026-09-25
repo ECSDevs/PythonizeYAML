@@ -1,0 +1,13 @@
+# Top of file comment
+name: example  # inline on a key
+# comment above server
+server:
+  # indented comment inside server
+  host: localhost  # inline inside a nested mapping
+  port: 8080
+  # indented comment right before the end of the nested mapping
+blank_after: true  # a comment separated from the next entry by a blank line
+
+# comment between entries, after a blank line
+enabled: true
+# trailing comment at end of document

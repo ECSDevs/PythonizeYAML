@@ -1,0 +1,8 @@
+literal: |
+  line one
+  line two
+folded: >
+  folded line one
+  folded line two
+stripped: |-
+  no trailing newline

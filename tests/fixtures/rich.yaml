@@ -1,0 +1,15 @@
+# Configuration for the example service
+name: example  # the service name
+version: "1.0.0"  # semantic version
+# Server settings
+server:
+  # where to listen
+  host: localhost
+  port: 8080
+  tags:
+    - web
+    - api
+features:
+  debug: false
+  verbose: 'yes'
+# end of config

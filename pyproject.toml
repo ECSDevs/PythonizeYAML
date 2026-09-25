@@ -1,0 +1,31 @@
+[project]
+name = "pythonizeyaml"
+version = "0.3.0"
+description = "A YAML library with a PyYAML-compatible API that preserves comments, indentation, and scalar styles across a load/dump round trip."
+readme = "README.md"
+requires-python = ">=3.10,<4.0"
+authors = [{ name = "PythonizeYAML contributors" }]
+dependencies = []
+
+[tool.poetry]
+packages = [{ include = "pythonizeyaml", from = "src" }]
+
+[tool.poetry.group.dev.dependencies]
+pytest = ">=7.0"
+maturin = ">=1.15,<2"
+
+[build-system]
+requires = ["maturin>=1.15,<2"]
+build-backend = "maturin"
+
+[tool.maturin]
+python-source = "src"
+module-name = "pythonizeyaml._native"
+manifest-path = "rust/Cargo.toml"
+features = ["pyo3/extension-module"]
+exclude = ["**/__pycache__/**", "**/*.pyc", "rust/target/**"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+

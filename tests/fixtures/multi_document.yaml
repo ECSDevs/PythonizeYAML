@@ -1,0 +1,13 @@
+---
+name: first
+values:
+  - a
+  - b
+# comment before the second document
+---
+name: second
+nested:
+    key: value
+---
+name: third
+list: [1, 2, 3]

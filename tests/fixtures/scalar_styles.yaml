@@ -1,0 +1,6 @@
+plain: bare value
+single: 'single quoted'
+double: "double quoted"
+single_plain: 'plain'
+double_plain: "plain"
+numeric_string: '123'

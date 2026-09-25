@@ -1,0 +1,9 @@
+name: plain
+count: 3
+enabled: true
+ratio: 1.5
+nested:
+  key: value
+items:
+  - one
+  - two
