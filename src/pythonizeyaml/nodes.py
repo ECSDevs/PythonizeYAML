@@ -43,6 +43,12 @@ class RoundTripMap(dict, _RoundTripMixin):
         self._pyy_node_id = node_id
         self._pyy_dirty = False
         self._pyy_entry_nodes: dict[Any, tuple[int, int]] = {}
+
+    def __call__(self, *path: Any) -> Any:
+        current: Any = self
+        for part in path:
+            current = current[part]
+        return current
     def __setitem__(self, key: Any, value: Any) -> None:
         dict.__setitem__(self, key, value)
         self._pyy_entry_nodes.setdefault(key, (-1, -1))
@@ -94,6 +100,12 @@ class RoundTripList(list, _RoundTripMixin):
         self._pyy_node_id = node_id
         self._pyy_dirty = False
         self._pyy_node_ids: list[int] = []
+
+    def __call__(self, *path: Any) -> Any:
+        current: Any = self
+        for part in path:
+            current = current[part]
+        return current
 
     def __setitem__(self, index: Any, value: Any) -> None:
         list.__setitem__(self, index, value)

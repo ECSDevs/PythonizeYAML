@@ -101,7 +101,7 @@ class NodeRef:
 
     @property
     def value(self) -> Any:
-        return self._document.value(*self._path)
+        return self._document.at(*self._path)
 
     @value.setter
     def value(self, value: Any) -> None:
@@ -322,6 +322,15 @@ class Document:
         return self._data
 
     @property
+    def value(self) -> Any:
+        """The document root value, as a Python scalar or round-trip container."""
+        return self._data
+
+    @value.setter
+    def value(self, value: Any) -> None:
+        self._set_value((), value)
+
+    @property
     def root(self) -> "NodeRef":
         return NodeRef(self, ())
 
@@ -372,17 +381,18 @@ class Document:
         return self._source
 
     def __getitem__(self, path: Any) -> Any:
-        return self.value(*_path_tuple((path,)))
+        return self.at(*_path_tuple((path,)))
 
     def __setitem__(self, path: Any, value: Any) -> None:
         self._set_value(_path_tuple((path,)), value)
 
-    def value(self, *path: Any) -> Any:
+    def at(self, *path: Any) -> Any:
+        """Return a value at a nested path."""
         normalized = _path_tuple(path)
         if normalized in self._aliases:
             target = self._target_path_for_alias(normalized)
             if target is not None:
-                return self.value(*target)
+                return self.at(*target)
         current = self._data
         for part in normalized:
             try:
@@ -391,10 +401,48 @@ class Document:
                 raise PathError(f"no YAML node at path {normalized!r}") from exc
         return current
 
+    def __iter__(self) -> Iterator[Any]:
+        if isinstance(self._data, (dict, list, tuple, set, str, bytes)):
+            return iter(self._data)
+        raise TypeError(f"'{type(self._data).__name__}' object is not iterable")
+
+    def __len__(self) -> int:
+        return len(self._data)
+
+    def keys(self):
+        if not isinstance(self._data, dict):
+            raise TypeError("document root is not a mapping")
+        return self._data.keys()
+
+    def items(self):
+        if not isinstance(self._data, dict):
+            raise TypeError("document root is not a mapping")
+        return self._data.items()
+
+    def values(self):
+        if not isinstance(self._data, dict):
+            raise TypeError("document root is not a mapping")
+        return self._data.values()
+
+    def __int__(self) -> int:
+        return int(self._data)
+
+    def __float__(self) -> float:
+        return float(self._data)
+
+    def __complex__(self) -> complex:
+        return complex(self._data)
+
+    def __str__(self) -> str:
+        return str(self._data)
+
+    def __bool__(self) -> bool:
+        return bool(self._data)
+
     def node(self, *path: Any) -> "NodeRef":
         normalized = _path_tuple(path)
         if normalized:
-            self.value(*normalized)
+            self.at(*normalized)
         return NodeRef(self, normalized)
 
     def _describe(self, path: tuple[Any, ...]) -> Optional[dict[str, Any]]:
@@ -499,11 +547,11 @@ class Document:
         **style_options: Any,
     ) -> "NodeRef":
         normalized = _path_tuple(path)
-        sequence = self.value(*normalized)
+        sequence = self.at(*normalized)
         if not isinstance(sequence, list):
             raise StyleError("append requires a sequence path")
         sequence.append(value)
-        return self.set(*normalized, len(sequence) - 1, value=self.value(*normalized, len(sequence) - 1), **style_options)
+        return self.set(*normalized, len(sequence) - 1, value=self.at(*normalized, len(sequence) - 1), **style_options)
 
     def insert(
         self,
@@ -513,7 +561,7 @@ class Document:
         **style_options: Any,
     ) -> "NodeRef":
         normalized = _path_tuple(path)
-        sequence = self.value(*normalized)
+        sequence = self.at(*normalized)
         if not isinstance(sequence, list):
             raise StyleError("insert requires a sequence path")
         sequence.insert(index, value)
@@ -526,7 +574,7 @@ class Document:
         node_id = self._node_id_for_path(normalized)
         if self._has_aliases_to(node_id):
             raise AliasError("cannot remove a node that still has aliases")
-        parent = self.value(*normalized[:-1])
+        parent = self.at(*normalized[:-1])
         key = normalized[-1]
         try:
             value = parent[key]
@@ -590,7 +638,7 @@ class Document:
 
     def _path_exists(self, path: tuple[Any, ...]) -> bool:
         try:
-            self.value(*path)
+            self.at(*path)
             return True
         except PathError:
             return False
@@ -762,7 +810,7 @@ class Document:
             return None
         if parent_description.get("collection_style") == "flow":
             return None
-        parent = self.value(*parent_path) if parent_path else self.data
+        parent = self.at(*parent_path) if parent_path else self.data
         if not isinstance(parent, dict) or path[-1] not in parent:
             return None
         parent_indent = 0
@@ -988,7 +1036,7 @@ class Document:
             description = self._describe(path)
             if description is None:
                 continue
-            value = self.value(*path)
+            value = self.at(*path)
             chomping = self._chomping.get(path)
             indent = self._block_indent.get(path)
             replacement = _render_scalar(value, style, chomping=chomping, block_indent=indent)
@@ -998,7 +1046,7 @@ class Document:
             description = self._describe(path)
             if description is None:
                 continue
-            value = self.value(*path)
+            value = self.at(*path)
             replacement = _render_document_node(self, path, config)
             start, end = self._inline_patch_range(path, description)
             patches.append((start, end, " " + replacement))
@@ -1011,7 +1059,7 @@ class Document:
             style = NodeRef(self, path).style
             if style is None:
                 continue
-            value = self.value(*path)
+            value = self.at(*path)
             replacement = _render_scalar(
                 value,
                 style,
@@ -1133,7 +1181,7 @@ class Document:
     def _next_sibling_start(self, path: tuple[Any, ...]) -> Optional[int]:
         if not path:
             return None
-        parent = self.value(*path[:-1])
+        parent = self.at(*path[:-1])
         key = path[-1]
         if isinstance(parent, dict):
             keys = list(parent)
@@ -1326,7 +1374,7 @@ def _comments_from_source(
 
 
 def _render_document_node(document: Document, path: tuple[Any, ...], config: IndentConfig) -> str:
-    return _render_node(document, path, document.value(*path), config, 0)
+    return _render_node(document, path, document.at(*path), config, 0)
 
 
 def _render_node(

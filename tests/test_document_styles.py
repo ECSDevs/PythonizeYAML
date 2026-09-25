@@ -36,6 +36,21 @@ from pythonizeyaml import (
 )
 
 
+def test_document_root_acts_like_its_python_value():
+    mapping = load_document("answer: 42\n")
+    assert dict(mapping) == {"answer": 42}
+    assert mapping["answer"] == 42
+    assert mapping.value is mapping.data
+
+    sequence = load_document("[one, two]\n")
+    assert list(sequence) == ["one", "two"]
+    assert sequence[0] == "one"
+
+    scalar = load_document("42\n")
+    assert scalar.value == 42
+    assert int(scalar) == 42
+
+
 def test_read_scalar_style_and_location():
     document = load_document("name: 'example'\n")
     node = document.node("name")
