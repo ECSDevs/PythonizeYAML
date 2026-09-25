@@ -31,6 +31,7 @@ from . import _native
 from .config import DEFAULT_CONFIG, IndentConfig
 from .errors import AliasError, PathError, StyleError, translate_native_error
 from .styles import Chomping, CollectionStyle, ScalarStyle, SourceSpan
+from .nodes import RoundTripList, RoundTripMap
 
 _ANCHOR_RE = re.compile(r"^[^\s\[\]{},*&!|>@`]+$")
 
@@ -1214,6 +1215,61 @@ class Document:
         return text
 
 
+class DocumentMapping(RoundTripMap, Document):
+    """A mapping-root document that can replace a normal ``dict`` directly."""
+
+    def __eq__(self, other: Any) -> bool:
+        return dict.__eq__(self, other._data if isinstance(other, Document) else other)
+
+    def __init__(self, data: dict, **kwargs: Any) -> None:
+        dict.__init__(self, data)
+        for name in ("_pyy_handle", "_pyy_node_id", "_pyy_dirty", "_pyy_entry_nodes"):
+            if hasattr(data, name):
+                setattr(self, name, getattr(data, name))
+        Document.__init__(self, self, **kwargs)
+        self._data = self
+
+    def __bool__(self) -> bool:
+        return dict.__len__(self) != 0
+
+
+class DocumentSequence(RoundTripList, Document):
+    """A sequence-root document that can replace a normal ``list`` directly."""
+
+    def __eq__(self, other: Any) -> bool:
+        return list.__eq__(self, other._data if isinstance(other, Document) else other)
+
+    def __init__(self, data: list, **kwargs: Any) -> None:
+        list.__init__(self, data)
+        for name in ("_pyy_handle", "_pyy_node_id", "_pyy_dirty", "_pyy_node_ids"):
+            if hasattr(data, name):
+                setattr(self, name, getattr(data, name))
+        Document.__init__(self, self, **kwargs)
+        self._data = self
+
+    def __bool__(self) -> bool:
+        return list.__len__(self) != 0
+
+
+class DocumentScalar(Document):
+    """A scalar-root document with normal numeric and string coercions."""
+
+    def __eq__(self, other: Any) -> bool:
+        return self._data == (other._data if isinstance(other, Document) else other)
+
+
+def _document_type(value: Any) -> type[Document]:
+    if isinstance(value, dict):
+        return DocumentMapping
+    if isinstance(value, list):
+        return DocumentSequence
+    return DocumentScalar
+
+
+def _make_document(value: Any, **kwargs: Any) -> Document:
+    return _document_type(value)(value, **kwargs)
+
+
 class DocumentStream:
     """A mutable ordered collection of styled YAML documents."""
 
@@ -1280,7 +1336,7 @@ def load_document(stream: Any) -> Document:
         raise translate_native_error(exc, text) from None
     root_ids = handle.root_ids()
     root_id = int(root_ids[0]) if root_ids else -1
-    return Document(value, handle=handle, root_id=root_id, source=text)
+    return _make_document(value, handle=handle, root_id=root_id, source=text)
 
 
 def load_documents(stream: Any) -> DocumentStream:
@@ -1291,7 +1347,7 @@ def load_documents(stream: Any) -> DocumentStream:
         raise translate_native_error(exc, text) from None
     root_ids = handle.root_ids()
     documents = [
-        Document(value, handle=handle, root_id=int(root_id), source=text)
+        _make_document(value, handle=handle, root_id=int(root_id), source=text)
         for value, root_id in zip(values, root_ids)
     ]
     return DocumentStream(documents, source=text, handle=handle)

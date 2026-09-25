@@ -66,20 +66,33 @@ class YAML:
         self._backend = _NativeBackend(self._backend_typ)
 
     def load(self, stream: Stream) -> Any:
+        from .document import _make_document
+
         text = _read_text(stream)
         try:
             value, _handle = _native.parse(text, safe=self._is_safe)
         except _native.NativeYamlError as exc:
             raise translate_native_error(exc, text) from None
-        return value
+        if self._is_safe:
+            return value
+        roots = _handle.root_ids()
+        return _make_document(value, handle=_handle, root_id=int(roots[0]) if roots else -1, source=text)
 
     def load_all(self, stream: Stream) -> List[Any]:
+        from .document import _make_document
+
         text = _read_text(stream)
         try:
             values, _handle = _native.parse_all(text, safe=self._is_safe)
         except _native.NativeYamlError as exc:
             raise translate_native_error(exc, text) from None
-        return list(values)
+        if self._is_safe:
+            return list(values)
+        roots = _handle.root_ids()
+        return [
+            _make_document(value, handle=_handle, root_id=int(root), source=text)
+            for value, root in zip(values, roots)
+        ]
 
     def dump(
         self,
@@ -89,6 +102,10 @@ class YAML:
         config: Optional[IndentConfig] = None,
         explicit_start: Optional[bool] = None,
     ) -> Optional[str]:
+        from .document import Document
+
+        if isinstance(data, Document):
+            return data.dump(stream, config=config, explicit_start=explicit_start)
         _reject_safe_tagged(data, self._is_safe)
         selected = config if config is not None else self.config
         try:

@@ -42,7 +42,7 @@ from .api import (
     safe_load_all,
 )
 from .config import DEFAULT_CONFIG, IndentConfig
-from .document import Document, DocumentStream, NodeRef, Comments, load_document, load_documents, read_document, read_documents
+from .document import Document, DocumentMapping, DocumentSequence, DocumentScalar, DocumentStream, NodeRef, Comments, load_document, load_documents, read_document, read_documents
 from .styles import Chomping, CollectionStyle, ScalarStyle, SourceSpan
 from .engine import SafeYAML, YAML
 from .tagged import Tagged
@@ -87,6 +87,9 @@ __all__ = [
     "DEFAULT_CONFIG",
     # style-aware documents
     "Document",
+    "DocumentMapping",
+    "DocumentSequence",
+    "DocumentScalar",
     "DocumentStream",
     "NodeRef",
     "Comments",
