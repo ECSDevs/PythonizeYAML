@@ -1,0 +1,17 @@
+{
+  "name": "pythonizeyaml-docs",
+  "private": true,
+  "description": "VuePress documentation for PythonizeYAML",
+  "scripts": {
+    "docs:dev": "vuepress dev docs",
+    "docs:build": "vuepress build docs",
+    "docs:clean-dev": "vuepress dev docs --clean-cache"
+  },
+  "devDependencies": {
+    "@vuepress/bundler-vite": "2.0.0-rc.31",
+    "@vuepress/theme-default": "2.0.0-rc.135",
+    "sass": "1.77.8",
+    "vue": "3.5.43",
+    "vuepress": "2.0.0-rc.31"
+  }
+}
