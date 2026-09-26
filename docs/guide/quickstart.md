@@ -42,9 +42,10 @@ if __name__ == "__main__":
     set_port(Path("config.yaml"), int(sys.argv[1]))
 ```
 
-`load()` accepts a string, bytes, or readable stream. The default loader keeps
-the source metadata attached to mappings and sequences, so changing a nested
-value produces a local edit when `dump()` is called.
+`load()` accepts a string, bytes, or readable stream. It returns a
+`DocumentMapping`, a style-aware `dict` subclass, so the nested assignment
+works like ordinary Python. `dump()` accepts the document back and patches
+only the changed value.
 
 ## 3. Run it
 
@@ -73,5 +74,6 @@ for document in documents:
 Path("environments.yaml").write_text(yaml.dump_all(documents), encoding="utf-8")
 ```
 
-`load_all()` returns a list. Use the document API when you need per-document
-comments, styles, or markers as first-class properties.
+`load_all()` returns a list of `Document` objects. Each one exposes its
+comments, styles, and document markers as first-class properties through
+`Document.node()`; see [Documents and style editing](../api/documents.md).

@@ -1,8 +1,9 @@
 # Build a release metadata command
 
 This example updates a release file used by a small Python project. The
-function API is enough for value changes; the document API is useful when the
-command also owns comments, quotes, or collection style.
+loaded `Document` is enough for value changes; the same object also exposes
+style editing, which the command uses for comments, quotes, and collection
+style.
 
 ## 1. Start with a release file
 

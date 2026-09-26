@@ -3,7 +3,7 @@ home: true
 heroText: PythonizeYAML
 tagline: 兼容 PyYAML、支持无损往返的 YAML 库。
 actions:
-  - text: 阅读指南
+  - text: 阅读教程
     link: /zh_CN/guide/
     type: primary
   - text: 浏览 API
@@ -36,4 +36,4 @@ document["service"]["port"] = 9090
 print(yaml.dump(document))
 ```
 
-这些指南讲解如何保留源文件格式、如何使用文档 API,以及如何安全地加载不受信任的 YAML。API 部分列出了公开的加载、导出、文档、样式和错误接口。
+教程逐步讲解加载、编辑与样式感知编辑。API 参考为每个公开接口列出精确的签名、参数与类成员。

@@ -31,7 +31,7 @@ export default defineUserConfig({
       '/': {
         selectLanguageName: 'English',
         navbar: [
-          { text: 'Guides', link: '/guide/' },
+          { text: 'Tutorial', link: '/guide/' },
           { text: 'API', link: '/api/' },
           { text: 'GitHub', link: 'https://github.com/ECSDevs/PythonizeYAML' }
         ]
@@ -39,7 +39,7 @@ export default defineUserConfig({
       '/zh_CN/': {
         selectLanguageName: '简体中文',
         navbar: [
-          { text: '指南', link: '/zh_CN/guide/' },
+          { text: '教程', link: '/zh_CN/guide/' },
           { text: 'API', link: '/zh_CN/api/' },
           { text: 'GitHub', link: 'https://github.com/ECSDevs/PythonizeYAML' }
         ]
@@ -48,36 +48,58 @@ export default defineUserConfig({
     sidebar: {
       '/guide/': [
         {
-          text: 'Guides',
+          text: 'Tutorial',
           children: [
             '/guide/',
-            '/guide/quickstart',
-            '/guide/round-trips',
+            '/guide/basics',
+            '/guide/editing',
+            '/guide/styles',
             '/guide/safety'
           ]
+        },
+        {
+          text: 'Worked examples',
+          children: ['/guide/quickstart', '/guide/round-trips']
         }
       ],
       '/api/': [
         {
           text: 'API Reference',
-          children: ['/api/', '/api/functions', '/api/documents']
+          children: [
+            '/api/',
+            '/api/functions',
+            '/api/documents',
+            '/api/styles',
+            '/api/errors'
+          ]
         }
       ],
       '/zh_CN/guide/': [
         {
-          text: '指南',
+          text: '教程',
           children: [
             '/zh_CN/guide/',
-            '/zh_CN/guide/quickstart',
-            '/zh_CN/guide/round-trips',
+            '/zh_CN/guide/basics',
+            '/zh_CN/guide/editing',
+            '/zh_CN/guide/styles',
             '/zh_CN/guide/safety'
           ]
+        },
+        {
+          text: '实战示例',
+          children: ['/zh_CN/guide/quickstart', '/zh_CN/guide/round-trips']
         }
       ],
       '/zh_CN/api/': [
         {
           text: 'API 参考',
-          children: ['/zh_CN/api/', '/zh_CN/api/functions', '/zh_CN/api/documents']
+          children: [
+            '/zh_CN/api/',
+            '/zh_CN/api/functions',
+            '/zh_CN/api/documents',
+            '/zh_CN/api/styles',
+            '/zh_CN/api/errors'
+          ]
         }
       ]
     }

@@ -3,7 +3,7 @@ home: true
 heroText: PythonizeYAML
 tagline: A PyYAML-compatible YAML library with lossless round trips.
 actions:
-  - text: Read the guides
+  - text: Read the tutorial
     link: /guide/
     type: primary
   - text: Browse the API
@@ -37,6 +37,6 @@ document["service"]["port"] = 9090
 print(yaml.dump(document))
 ```
 
-The guides explain how to preserve source formatting, work with the document
-API, and load untrusted YAML safely. The API section lists the public loading,
-dumping, document, style, and error interfaces.
+The tutorial walks through loading, editing, and style-aware editing step by
+step. The API reference lists exact signatures, arguments, and class members
+for every public interface.

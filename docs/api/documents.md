@@ -1,149 +1,361 @@
 # Documents and style editing
 
-The document API exposes source metadata and mutation operations as Python
-objects. Use it when a tool needs to control comments, styles, tags, anchors,
-aliases, markers, or exact paths.
-
-## Loading documents
-
-```python
-load_document(stream: Any) -> Document
-load_documents(stream: Any) -> DocumentStream
-read_document(path: str | Path) -> Document
-read_documents(path: str | Path) -> DocumentStream
-```
-
-The `load_*` functions accept strings, UTF-8 bytes, and readable streams.
-`read_*` read UTF-8 text from a filesystem path. `load_document()` returns one
-document; `load_documents()` preserves the ordered multi-document stream.
-
-```python
-document = yaml.load_document("name: demo\n")
-document.node("name").comments.inline = "# Display name"
-print(document.dump())
-```
+Every round-trip load returns a `Document` — a style-aware object that also
+behaves like the ordinary `dict`, `list`, or scalar it wraps. This page is the
+reference for that object model: the `Document` classes, the `NodeRef` style
+views, comment access, and multi-document streams.
 
 ## `Document`
 
 ```python
-Document.new(root: Any = None, *, config: IndentConfig | None = None) -> Document
-Document.value: Any
-Document.data: Any
-Document.root: NodeRef
-Document.source: str
-Document.directives: list[str]
-Document.explicit_start: bool
-Document.explicit_end: bool
-Document.at(*path: Any) -> Any
-Document.node(*path: Any) -> NodeRef
-Document.set(*path: Any, value: Any, style: ScalarStyle | str | None = None,
-             collection_style: CollectionStyle | str | None = None,
-             chomping: Chomping | str | None = None,
-             block_indent_indicator: int | None = None,
-             tag: str | None = None, anchor: str | None = None,
-             before: str | Iterable[str] | None = None,
-             inline: str | None = None,
-             after: str | Iterable[str] | None = None) -> NodeRef
-Document.append(*path: Any, value: Any, **style_options: Any) -> NodeRef
-Document.insert(*path: Any, index: int, value: Any,
-                **style_options: Any) -> NodeRef
-Document.remove(*path: Any) -> Any
-Document.alias(*path: Any, target: NodeRef | tuple[Any, ...],
-               anchor: str | None = None) -> NodeRef
-Document.dump(stream: Any = None, *, config: IndentConfig | None = None,
-              explicit_start: bool | None = None) -> str | None
+class Document(data, *, handle=None, root_id=-1, source='', config=None)
 ```
 
-Paths are mapping keys or sequence indexes. `at()` raises `PathError` when a
-path does not exist. `set()` can create missing mapping paths, applies style
-options atomically, and returns the new node. `append()` and `insert()` require
-a sequence path; `remove()` rejects the root and nodes that still have aliases.
-`alias()` creates a shared alias and generates an anchor name when necessary.
+A mutable, style-aware YAML document. In application code a `Document` is
+usually produced by `load()`, `load_all()`, or `load_document()` rather than
+constructed directly; use `Document.new()` to build one from Python data.
 
-`source` is the original loaded text. `dump()` returns text or writes to a
-stream. An unchanged loaded document is replayed exactly; modified nodes are
-patched locally. `config` and `explicit_start` override emission for that call.
+- **data** – the root Python value: a mapping, sequence, or scalar. The
+  document mutates this value in place.
+- **handle** – the native parse handle backing the document, if it was
+  loaded from YAML text. The handle supplies source metadata (spans, styles,
+  anchors, directives) for unchanged nodes.
+- **root_id** – the node id of the root inside *handle*; `-1` when there is
+  no handle.
+- **source** – the original YAML text, used for byte-exact replay and local
+  patching. Ignored when *handle* is given.
+- **config** – an `IndentConfig` used as the emission fallback for nodes that
+  have no source layout. Defaults to `DEFAULT_CONFIG`.
+
+`Document` also implements the container protocol of its root: `len()`,
+iteration, `document[key]` and `document[key] = value` (delegating to
+`at()`/`set()`), and, for mapping roots, `keys()`, `items()`, and `values()`.
+Scalar roots coerce through `str()`, `int()`, `float()`, `complex()`, and
+`bool()`.
+
+### `Document.new(root=None, *, config=None)`
+
+Classmethod returning a new `Document` wrapping *root*, which defaults to
+`None`. New data has no source layout, so `dump()` emits it with *config*.
+
+### `Document.value`
+
+The document root value as a Python scalar or round-trip container.
+Assigning to `value` replaces the whole root.
+
+### `Document.data`
+
+The document root value. Read-only twin of `Document.value` kept for
+explicitness at call sites that mutate the returned containers in place.
+
+### `Document.root`
+
+A `NodeRef` for the document root (`path == ()`), giving access to
+document-level comments, styles, tags, and anchors.
+
+### `Document.source`
+
+The original loaded text. Empty for documents created with `Document.new()`.
+
+### `Document.directives`
+
+The directive lines (for example `["%YAML 1.1"]`) preceding the first
+document. Assigning a list replaces them; every line must start with `%` or
+`StyleError` is raised.
+
+### `Document.explicit_start`
+
+Whether the document starts with an explicit `---` marker. Assign a `bool`
+to override what the source had.
+
+### `Document.explicit_end`
+
+Whether the document ends with an explicit `...` marker. Assign a `bool` to
+override what the source had.
+
+### `Document.at(*path)`
+
+Return the value at *path*.
+
+- **\\*path** – one or more path parts: mapping keys or sequence indexes,
+  read from the outside in. A single tuple or list may be passed instead of
+  separate arguments.
+
+Missing paths raise `PathError`. Alias nodes resolve to their target value.
 
 ```python
-document = yaml.Document.new({"items": []})
-document.append("items", value="first", style="single")
-document.set("enabled", value=True, inline="# Feature flag")
-print(document.dump())
+>>> document = yaml.load("service:\n  ports: [8080, 8081]\n")
+>>> document.at("service", "ports", 0)
+8080
+```
+
+### `Document.node(*path)`
+
+Return a `NodeRef` view for the node at *path*. Without arguments it returns
+the root node. Paths that do not exist raise `PathError`.
+
+### `Document.set(*path, value, style=None, collection_style=None, chomping=None, block_indent_indicator=None, tag=None, anchor=None, before=None, inline=None, after=None)`
+
+Set the node at *path* to *value*, optionally applying style metadata in the
+same atomic step. Missing intermediate mapping keys are created.
+
+- **\\*path** – path parts of the node to set.
+- **value** – the new Python value.
+- **style** – (`ScalarStyle | str | None`) scalar style: `plain`, `single`,
+  `double`, `literal`, or `folded`. String values are coerced.
+- **collection_style** – (`CollectionStyle | str | None`) `block` or `flow`.
+- **chomping** – (`Chomping | str | None`) `clip`, `strip`, or `keep`;
+  requires a literal or folded style.
+- **block_indent_indicator** – (`int | None`) explicit indentation indicator
+  for block scalars, `1` through `9`.
+- **tag** – (`str | None`) tag for the node; must start with `!`.
+- **anchor** – (`str | None`) anchor name; must not contain YAML indicator
+  characters.
+- **before**, **after** – (`str | Iterable[str] | None`) comment lines placed
+  before or after the entry. Every non-empty line must start with `#`.
+- **inline** – (`str | None`) a single-line comment placed after the value.
+
+All arguments are validated before anything is applied; an invalid
+combination raises `StyleError` and leaves the document unchanged. Returns
+the `NodeRef` for the written node.
+
+```python
+>>> document = yaml.Document.new({})
+>>> document.set("build", "command", value="python -m build", style="double")
+NodeRef(path=('build', 'command'))
+```
+
+### `Document.append(*path, value, **style_options)`
+
+Append *value* to the sequence at *path* and return the `NodeRef` of the new
+item. *path* must point to a `list`, otherwise `StyleError` is raised.
+*style_options* are the same style keywords as `Document.set()`.
+
+### `Document.insert(*path, index, value, **style_options)`
+
+Insert *value* into the sequence at *path* before position *index*, shifting
+the rest, and return the `NodeRef` of the new item.
+
+- **index** – insertion position; existing items from that position on are
+  moved back.
+
+### `Document.remove(*path)`
+
+Remove the node at *path* and return its value.
+
+- **\\*path** – path parts of the node to remove; the root cannot be removed.
+
+Raises `PathError` for missing paths and `AliasError` when the node still
+has aliases pointing at it. Style overrides attached to the removed subtree
+are discarded.
+
+### `Document.alias(*path, target, anchor=None)`
+
+Make the node at *path* an alias of *target*.
+
+- **\\*path** – path parts of the node that should become the alias.
+- **target** – a `NodeRef` in the same document, or a path tuple pointing at
+  the anchor source. Aliasing across documents raises `AliasError`.- **anchor** – (`str | None`) anchor name to attach to the target. When
+  omitted and the target has no anchor, a free name (`id001`, `id002`, ...)
+  is generated.
+
+Returns the `NodeRef` of the alias node; `is_alias` and `alias_target` are
+available on it. The anchor lives on the target node.
+
+```python
+>>> document = yaml.load("default: 1\noverride: 2\n")
+>>> document.alias("override", target=document.node("default"))
+NodeRef(path=('override',))
+>>> document.dump()
+'default: &id001 1\noverride: *id001\n'
+```
+
+### `Document.dump(stream=None, *, config=None, explicit_start=None, explicit_end=None)`
+
+Emit the document.
+
+- **stream** – a writable stream, or `None` to return the text.
+- **config** – (`IndentConfig | None`) per-call emission override.
+- **explicit_start**, **explicit_end** – (`bool | None`) per-call marker
+  overrides; when omitted the document properties apply.
+
+An unchanged loaded document replays its source text exactly; modified nodes
+are patched locally, and replaced or newly created subtrees are emitted
+canonically with *config*.
+
+## `DocumentMapping`, `DocumentSequence`, and `DocumentScalar`
+
+```python
+DocumentMapping(data, *, ...)
+DocumentSequence(data, *, ...)
+DocumentScalar(data, *, ...)
+```
+
+The concrete `Document` subclasses returned by `load()`, `load_all()`, and
+`load_document()` according to the root node type. Keyword arguments match
+the `Document` constructor. Each inherits every `Document` member and also
+behaves like the wrapped value, so it can replace a normal `dict`, `list`,
+or scalar directly:
+
+- **DocumentMapping** – a `dict` subclass; compares equal to plain mappings
+  and other documents.
+- **DocumentSequence** – a `list` subclass.
+- **DocumentScalar** – a scalar wrapper; compares equal to the wrapped value
+  and coerces through `str()`, `int()`, `float()`, `complex()`, and `bool()`.
+  Scalar roots keep their original style and formatting, including quotes
+  and block headers.
+
+```python
+>>> document = yaml.load("'0.3.0'\n")
+>>> document == "0.3.0", document.root.style
+(True, <ScalarStyle.SINGLE: 'single'>)
 ```
 
 ## `NodeRef`
 
+A stable path-based view over one node of a `Document`, returned by
+`Document.node()`, `Document.set()`, `Document.append()`,
+`Document.insert()`, and `Document.alias()`. Property assignments validate
+the requested style against the node's value before mutating.
+
+### `NodeRef.path`
+
+The `tuple` of path parts identifying the node.
+
+### `NodeRef.value`
+
+The node's Python value. Assigning replaces the value; a style already
+attached to the node is validated against the new value first.
+
+### `NodeRef.span`
+
+A `SourceSpan` with the byte offsets and one-based line/column of the node
+in the original text, or `None` for nodes without source metadata.
+
+### `NodeRef.style`
+
+The scalar style (`ScalarStyle | None`): `plain`, `single`, `double`,
+`literal`, or `folded`. Assigning a style that does not fit the value raises
+`StyleError`.
+
+### `NodeRef.collection_style`
+
+The collection style (`CollectionStyle | None`): `block` or `flow`. Only
+meaningful for mappings and sequences.
+
+### `NodeRef.chomping`
+
+The chomping indicator (`Chomping | None`): `clip`, `strip`, or `keep`.
+Only literal and folded scalars can carry it; assigning it to any other
+style raises `StyleError`. Assign `None` to clear the override.
+
+### `NodeRef.block_indent_indicator`
+
+The explicit indentation indicator (`int | None`, `1`–`9`) for block
+scalars. Assign `None` to clear it.
+
+### `NodeRef.tag`
+
+The node tag (`str | None`). Assigned values must start with `!`.
+
+### `NodeRef.anchor`
+
+The anchor name (`str | None`). Renaming an anchor rewrites the aliases
+that point at it; removing an anchor that still has aliases raises
+`AliasError`.
+
+### `NodeRef.is_alias`
+
+Whether the node is an alias (`*name`) of another node.
+
+### `NodeRef.alias_target`
+
+The `NodeRef` of the anchor this alias points at, or `None` when the node is
+not an alias.
+
+### `NodeRef.comments`
+
+The `Comments` view for this node's entry.
+
+### `NodeRef.update(**values)`
+
+Apply several fields in one atomic step and return the same `NodeRef`.
+
+- **\\*\\*values** – any of `value`, `style`, `collection_style`, `chomping`,
+  `block_indent_indicator`, `tag`, `anchor`, `before`, `inline`, `after`,
+  with the same semantics as the corresponding properties and comment
+  fields.
+
+Unknown fields raise `TypeError`; invalid combinations raise `StyleError`
+with the document restored to its previous state, so the update never
+applies partially.
+
 ```python
-NodeRef.path: tuple[Any, ...]
-NodeRef.value: Any
-NodeRef.span: SourceSpan | None
-NodeRef.style: ScalarStyle | None
-NodeRef.collection_style: CollectionStyle | None
-NodeRef.chomping: Chomping | None
-NodeRef.block_indent_indicator: int | None
-NodeRef.tag: str | None
-NodeRef.anchor: str | None
-NodeRef.is_alias: bool
-NodeRef.alias_target: NodeRef | None
-NodeRef.comments: Comments
-NodeRef.update(**values: Any) -> NodeRef
-```
-
-Scalar styles are `plain`, `single`, `double`, `literal`, and `folded`.
-Collection styles are `block` and `flow`. Chomping is `clip`, `strip`, or
-`keep`; it only applies to literal and folded strings. Block indentation
-indicators must be integers from 1 through 9. Tags must start with `!`, and
-anchor names cannot contain YAML indicator characters.
-
-`update()` accepts `value`, all style properties, `tag`, `anchor`, and the
-comment fields `before`, `inline`, and `after`. Unknown fields raise
-`TypeError`; invalid combinations raise `StyleError` without partial mutation.
-
-```python
-ref = document.node("message")
-ref.update(style="double", inline="# Shown to users")
-print(ref.path, ref.value, ref.style)
+>>> ref = document.node("message")
+>>> ref.update(style="double", inline="# shown to users") is ref
+True
 ```
 
 ## `Comments`
 
-```python
-Comments.before: list[str]
-Comments.inline: str | None
-Comments.after: list[str]
-```
+Accessed through `NodeRef.comments`. Comments are stored on the mapping
+entry or sequence item that owns the node, so they survive value edits.
 
-Before and after comments accept a string or iterable of lines. Every non-empty
-line must include its leading `#`. Inline comments must be one line.
+### `Comments.before`
+
+Comment lines above the entry (`list[str]`). Assign a string or an iterable
+of lines; every non-empty line must start with `#`.
+
+### `Comments.inline`
+
+The comment on the same line as the value (`str | None`). Must be a single
+line starting with `#`.
+
+### `Comments.after`
+
+Comment lines below the entry, before the next sibling (`list[str]`), with
+the same rules as `Comments.before`.
+
+```python
+>>> document.node("channel").comments.before = ["# Published channel"]
+```
 
 ## `DocumentStream`
 
 ```python
-DocumentStream(documents: Iterable[Document] = (), *,
-               source: str = "", handle: Any = None)
-len(stream) -> int
-stream[index] -> Document
-stream.append(document: Document) -> None
-stream.insert(index: int, document: Document) -> None
-stream.remove(index: int) -> Document
-stream.dump(stream: Any = None, *, config: IndentConfig | None = None,
-            explicit_start: bool = True) -> str | None
+DocumentStream(documents=(), *, source='', handle=None)
 ```
 
-`DocumentStream` is ordered and mutable. Its `dump()` method preserves an
-unchanged source stream exactly and otherwise emits each document with
-document markers.
+An ordered, mutable collection of `Document` objects, returned by
+`load_documents()` and `read_documents()`. It supports `len()`, iteration,
+and `stream[index]`.
 
-## Configuration and public types
+- **documents** – initial `Document` objects.
+- **source** – the original stream text, replayed exactly while no document
+  changed.
+- **handle** – native handle backing the stream.
 
-```python
-IndentConfig(mapping: int = 2, sequence: int = 2, offset: int = 0,
-             width: int = 80, preserve_quotes: bool = True)
-Tagged(tag: str, value: Any)
-SourceSpan(start: int, end: int, line: int, column: int)
-```
+### `DocumentStream.append(document)`
 
-`IndentConfig` validates positive indentation and width, a non-negative offset
-smaller than `sequence`, and controls newly emitted or explicitly re-laid-out
-data. `Tagged` is an immutable representation of unknown application tags.
-`SourceSpan` reports byte offsets and zero-based line and column positions.
+Add *document* at the end. Raises `TypeError` for anything that is not a
+`Document`.
+
+### `DocumentStream.insert(index, document)`
+
+Insert *document* at *index*.
+
+### `DocumentStream.remove(index)`
+
+Remove and return the `Document` at *index*.
+
+### `DocumentStream.dump(stream=None, *, config=None, explicit_start=True)`
+
+Emit the whole stream.
+
+- **stream** – a writable stream, or `None` to return the text.
+- **config** – (`IndentConfig | None`) emission override for changed
+  documents.
+- **explicit_start** – emit a `---` marker before each document; `True` by
+  default for multi-document streams.
+
+An unchanged stream replays its source text exactly.

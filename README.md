@@ -19,14 +19,14 @@ The table below compares `pythonizeyaml` 0.3.0 with PyYAML, `yamltrip`, and
 |---|---|---|---|---|
 | Primary purpose | PyYAML-style YAML API with lossless round trips | General YAML serializer/parser | Format-preserving YAML file editor and query API | General YAML with strong round-trip support |
 | Main API | `load`, `load_all`, `dump`, `dump_all`, `safe_*`, `YAML` | Same function-oriented API, plus lower-level scanner/parser APIs | `load`/`loads` return `Document`; immutable edits plus `Editor` | Class-oriented `YAML()` API; legacy top-level functions are deprecated |
-| Document API | `load_document`/`load_documents`, `read_document`/`read_documents`, mutable `Document` and `DocumentStream`, path-based `NodeRef` | No mutable document wrapper; use Python values or low-level nodes/events | `Document`/`Editor` centered editing and query API | `YAML().load()` returns mutable `CommentedMap`/`CommentedSeq` documents |
-| Return model | Standard Python scalars, `RoundTripMap`/`List`/`Set`, `Decimal`, `Tagged` | Plain Python objects and YAML AST/event/token objects | `Document` wrapper around plain Python values | `CommentedMap`, `CommentedSeq`, scalar subclasses |
+| Document API | `load`/`load_all` return mutable `Document` objects; `load_document`/`load_documents` and `read_document`/`read_documents` are explicit spellings; path-based `NodeRef` for style editing | No mutable document wrapper; use Python values or low-level nodes/events | `Document`/`Editor` centered editing and query API | `YAML().load()` returns mutable `CommentedMap`/`CommentedSeq` documents |
+| Return model | `Document` roots (`dict`/`list` subclasses); nested standard Python scalars, `RoundTripMap`/`List`/`Set`, `Decimal`, `Tagged` | Plain Python objects and YAML AST/event/token objects | `Document` wrapper around plain Python values | `CommentedMap`, `CommentedSeq`, scalar subclasses |
 | Backend | Custom Rust parser/emitter through PyO3 | Pure Python plus optional LibYAML C extension | `tree-sitter-yaml` through Rust `yamlpath`/`yamlpatch` | Python plus optional C parser |
 | Unchanged round trip | Exact source text, including comments, blanks, styles, markers, and line layout | No preservation guarantee; output is regenerated | Preserves source and format while patching edits | Preserves comments and styles in round-trip mode, but output remains emitter-controlled |
 | Comments and whitespace | Preserved exactly for unchanged documents | Lost or normalized | Preserved | Preserved, generally |
 | Indentation and flow style | Original formatting retained; explicit `IndentConfig` can override | Regenerated according to dumper settings | Preserved | Retained in normal round-trip workflows, with indentation configurable |
 | Scalar quotes/styles | Preserved, including redundant quotes and block styles | Rewritten | Preserved as raw source | Preserved, including `preserve_quotes` support |
-| Mutation model | Mutate loaded dict-like/list-like objects; unchanged bytes are retained | Mutate plain objects, then regenerate | Immutable `Document` methods or mutable `Editor`; minimal patches | Mutate `CommentedMap`/`CommentedSeq` objects |
+| Mutation model | Mutate loaded `Document` objects (dict-like/list-like); unchanged bytes are retained | Mutate plain objects, then regenerate | Immutable `Document` methods or mutable `Editor`; minimal patches | Mutate `CommentedMap`/`CommentedSeq` objects |
 | Style editing API | `NodeRef` edits scalar/collection styles, comments, tags, anchors, aliases, chomping, directives, and markers | Dumper options and low-level representers; no source style editing API | Path/editor operations preserve selected source formatting | Object attributes and `YAML` emitter options expose round-trip style controls |
 | Structural edit fidelity | Local edits are patched; replaced/new subtrees may be canonically emitted | Full regeneration | Designed for minimal structural patches | Strong preservation of attached comments and formatting |
 | YAML schema | YAML 1.2 core by default; `%YAML 1.1` switches legacy booleans | YAML 1.1-oriented resolver by default | Focused on editable YAML values; tags are not interpreted | YAML 1.2 by default |
@@ -148,9 +148,10 @@ lossless output.
 
 ## Advanced Style Documents
 
-The original PyYAML-style functions are unchanged. For explicit control over
-comments, scalar styles, collection styles, tags, anchors, aliases, directives,
-and document markers, use the additive document API:
+`load()`, `load_all()`, and `load_document()` all return mutable, style-aware
+`Document` objects. For explicit control over comments, scalar styles,
+collection styles, tags, anchors, aliases, directives, and document markers,
+use the NodeRef style API on the loaded document:
 
 ```python
 from pythonizeyaml import ScalarStyle, load_document
@@ -164,7 +165,9 @@ text = document.dump()
 ```
 
 `load_document()` returns one mutable `Document`; `load_documents()` returns a
-list-like `DocumentStream`. `Document.node(*path)` returns a `NodeRef`, while
+list-like `DocumentStream`. Collection roots load as `DocumentMapping` or
+`DocumentSequence` (`dict`/`list` subclasses) and scalar roots as
+`DocumentScalar`. `Document.node(*path)` returns a `NodeRef`, while
 `Document.at(*path)` and direct `document[path]` access return ordinary Python
 values. Use `Document.new()` or `Document.set(...)` to create styled documents.
 
@@ -194,11 +197,13 @@ poetry build
 Tests run against `tests/fixtures/`; add malformed inputs under
 `tests/fixtures/invalid/`.
 
-## Known Limitation
+## Root Scalar Documents
 
-Root scalar documents cannot carry source metadata while retaining exact Python
-scalar types. They load as ordinary scalars and are emitted canonically; nested
-scalars retain their original style and formatting.
+Root scalars load as `DocumentScalar`, a `Document` wrapper that keeps source
+metadata and scalar styles (quotes, block headers) but is not a `str`/`int`
+subclass. It compares equal to the wrapped value and coerces through `str()`,
+`int()`, `float()`, and `bool()`; nested scalars are ordinary Python values
+with their original style and formatting retained.
 
 
 

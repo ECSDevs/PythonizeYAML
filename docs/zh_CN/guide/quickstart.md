@@ -40,7 +40,7 @@ if __name__ == "__main__":
     set_port(Path("config.yaml"), int(sys.argv[1]))
 ```
 
-`load()` 接受字符串、字节串或可读流。默认加载器会把源元数据附着在映射和序列上,因此修改嵌套值后,`dump()` 会产生一次局部编辑。
+`load()` 接受字符串、字节串或可读流。它返回 `DocumentMapping` —— 一个样式感知的 `dict` 子类,因此嵌套赋值就像普通 Python 一样工作。`dump()` 接受该文档并只对修改过的值打补丁。
 
 ## 3. 运行它
 
@@ -68,4 +68,4 @@ for document in documents:
 Path("environments.yaml").write_text(yaml.dump_all(documents), encoding="utf-8")
 ```
 
-`load_all()` 返回一个列表。当你需要把每个文档的注释、样式或文档标记当作一等属性处理时,请使用文档 API。
+`load_all()` 返回一个 `Document` 对象列表。每个文档都通过 `Document.node()` 把自己的注释、样式和文档标记暴露为一等属性;参见[文档与样式编辑](../api/documents.md)。

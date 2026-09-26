@@ -1,13 +1,28 @@
-# Guides
+# Tutorial
 
-The guides use small, complete projects. Each example starts with a YAML file,
-adds a Python script, and shows the behavior to verify.
+This tutorial walks through PythonizeYAML from first principles: loading and
+dumping, editing values in place, controlling comments and styles, and
+loading untrusted input safely. Each chapter builds on the previous ones and
+ends where the [API reference](../api/) takes over.
 
-1. [Edit a service configuration](./quickstart.md) - update one setting while
-   preserving comments and layout.
-2. [Build a release metadata command](./round-trips.md) - use the document API
-   to update values and add a comment with an explicit style.
-3. [Validate a CI manifest safely](./safety.md) - read untrusted YAML without
-   constructing application-specific objects.
+PythonizeYAML is a YAML library with a PyYAML-compatible API and a lossless
+round-trip engine: loading a document, changing a value, and dumping it again
+reproduces the original file byte for byte everywhere you did not touch.
 
-The examples use only Python and `pythonizeyaml`; no framework is required.
+The chapters use `import pythonizeyaml as yaml` throughout, so the examples
+read like PyYAML code.
+
+1. [Loading and dumping](./basics.md) - `load()`, `dump()`, document
+   objects, and the round-trip guarantee.
+2. [Editing values](./editing.md) - paths, assignment, `set()`, sequences,
+   and building documents from scratch.
+3. [Comments, styles, tags, and anchors](./styles.md) - the style-aware
+   editing layer exposed through `NodeRef`.
+4. [Loading untrusted YAML](./safety.md) - `safe_load()`, `Tagged`, and the
+   error model at a trust boundary.
+
+When you want complete, runnable projects instead of isolated snippets, see
+the worked examples:
+
+- [Edit a service configuration](./quickstart.md)
+- [Build a release metadata command](./round-trips.md)

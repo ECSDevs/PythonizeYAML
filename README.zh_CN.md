@@ -14,14 +14,14 @@
 |---|---|---|---|---|
 | 主要定位 | 提供 PyYAML 风格的 YAML API,支持无损往返 | 通用 YAML 序列化器/解析器 | 保持格式的 YAML 文件编辑器与查询 API | 通用 YAML 库,具备强大的往返支持 |
 | 主要 API | `load`、`load_all`、`dump`、`dump_all`、`safe_*`、`YAML` | 同样以函数为主的 API,另提供更底层的 scanner/parser API | `load`/`loads` 返回 `Document`;不可变编辑,另有 `Editor` | 面向类实例的 `YAML()` API;旧式顶层函数已弃用 |
-| Document API | `load_document`/`load_documents`、`read_document`/`read_documents`,可变的 `Document` 与 `DocumentStream`,基于路径的 `NodeRef` | 没有可变的文档包装;请使用 Python 值或底层 node/event | 以 `Document`/`Editor` 为核心的编辑与查询 API | `YAML().load()` 返回可变的 `CommentedMap`/`CommentedSeq` 文档 |
-| 返回模型 | 标准 Python 标量、`RoundTripMap`/`List`/`Set`、`Decimal`、`Tagged` | 普通 Python 对象以及 YAML AST/event/token 对象 | 包裹普通 Python 值的 `Document` | `CommentedMap`、`CommentedSeq` 及标量子类 |
+| Document API | `load`/`load_all` 返回可变的 `Document` 对象;`load_document`/`load_documents` 与 `read_document`/`read_documents` 是显式写法;基于路径的 `NodeRef` 提供样式编辑 | 没有可变的文档包装;请使用 Python 值或底层 node/event | 以 `Document`/`Editor` 为核心的编辑与查询 API | `YAML().load()` 返回可变的 `CommentedMap`/`CommentedSeq` 文档 |
+| 返回模型 | `Document` 根(`dict`/`list` 子类);嵌套值为标准 Python 标量、`RoundTripMap`/`List`/`Set`、`Decimal`、`Tagged` | 普通 Python 对象以及 YAML AST/event/token 对象 | 包裹普通 Python 值的 `Document` | `CommentedMap`、`CommentedSeq` 及标量子类 |
 | 后端 | 通过 PyO3 调用的自研 Rust 解析器/发射器 | 纯 Python,另有可选的 LibYAML C 扩展 | 通过 Rust `yamlpath`/`yamlpatch` 使用 `tree-sitter-yaml` | Python,另有可选的 C 解析器 |
 | 未修改文档的往返 | 与源文本完全一致,包括注释、空行、样式、标记与换行布局 | 不保证保留;输出会重新生成 | 打补丁式编辑,保留源文本与格式 | 往返模式下保留注释与样式,但输出仍由发射器控制 |
 | 注释与空白 | 未修改的文档逐字节保留 | 丢失或被规范化 | 保留 | 通常会保留 |
 | 缩进与流式风格 | 保留原始格式;可用显式 `IndentConfig` 覆盖 | 按导出器设置重新生成 | 保留 | 常规往返流程中会保留,缩进可配置 |
 | 标量引号/样式 | 保留,包括冗余引号与块样式 | 会被重写 | 按原始源文本保留 | 保留,并支持 `preserve_quotes` |
-| 修改模型 | 直接修改加载得到的 dict 风格/list 风格对象;未改动的字节保持原样 | 修改普通对象后整体重新生成 | 不可变的 `Document` 方法或可变的 `Editor`;最小化补丁 | 修改 `CommentedMap`/`CommentedSeq` 对象 |
+| 修改模型 | 直接修改加载得到的 `Document` 对象(dict 风格/list 风格);未改动的字节保持原样 | 修改普通对象后整体重新生成 | 不可变的 `Document` 方法或可变的 `Editor`;最小化补丁 | 修改 `CommentedMap`/`CommentedSeq` 对象 |
 | 样式编辑 API | `NodeRef` 可编辑标量/集合样式、注释、标签、锚点、别名、chomping、指令与文档标记 | 提供导出选项与底层 representer;没有源样式编辑 API | 路径/编辑器操作可保留选定的源格式 | 通过对象属性与 `YAML` 发射选项提供往返样式控制 |
 | 结构编辑保真度 | 局部编辑以补丁方式应用;被替换/新增的子树可能按规范格式输出 | 整体重新生成 | 为最小化结构补丁而设计 | 对附属注释与格式的保留非常完整 |
 | YAML schema | 默认 YAML 1.2 core;`%YAML 1.1` 切换为旧版布尔值 | 默认面向 YAML 1.1 的 resolver | 只关注可编辑的 YAML 值;不解释标签 | 默认 YAML 1.2 |
@@ -125,7 +125,7 @@ value = yaml.safe_load("enabled: true\n")
 
 ## 高级样式文档
 
-原有 PyYAML 风格的函数保持不变。若要显式控制注释、标量样式、集合样式、标签、锚点、别名、指令和文档标记,请使用增量式文档 API:
+`load()`、`load_all()` 与 `load_document()` 都返回可变的、样式感知的 `Document` 对象。若要显式控制注释、标量样式、集合样式、标签、锚点、别名、指令和文档标记,请在加载的文档上使用 NodeRef 样式 API:
 
 ```python
 from pythonizeyaml import ScalarStyle, load_document
@@ -138,7 +138,7 @@ document.node("items").collection_style = "flow"
 text = document.dump()
 ```
 
-`load_document()` 返回单个可变的 `Document`;`load_documents()` 返回列表式的 `DocumentStream`。`Document.node(*path)` 返回 `NodeRef`,而 `Document.at(*path)` 与直接的 `document[path]` 访问返回普通 Python 值。使用 `Document.new()` 或 `Document.set(...)` 可以创建带样式的文档。
+`load_document()` 返回单个可变的 `Document`;`load_documents()` 返回列表式的 `DocumentStream`。集合根加载为 `DocumentMapping` 或 `DocumentSequence`(`dict`/`list` 子类),标量根加载为 `DocumentScalar`。`Document.node(*path)` 返回 `NodeRef`,而 `Document.at(*path)` 与直接的 `document[path]` 访问返回普通 Python 值。使用 `Document.new()` 或 `Document.set(...)` 可以创建带样式的文档。
 
 `NodeRef` 暴露 `style`、`collection_style`、`chomping`、`block_indent_indicator`、`tag`、`anchor`、`comments`、`is_alias` 和 `alias_target`。其 `update(...)` 方法可原子地应用多个字段。样式变更在修改前会先校验;失败情形参见 `StyleError`、`PathError` 和 `AliasError`。
 
@@ -159,6 +159,6 @@ poetry build
 
 测试基于 `tests/fixtures/` 运行;新增的格式错误输入请放在 `tests/fixtures/invalid/` 下。
 
-## 已知限制
+## 根级标量文档
 
-根级标量文档在保持精确 Python 标量类型的同时,无法携带源元数据。它们会作为普通标量加载,并以规范形式输出;嵌套标量则保留其原始样式与格式。
+根级标量加载为 `DocumentScalar` —— 一个保留源元数据和标量样式(引号、块标头)的 `Document` 包装,但它不是 `str`/`int` 的子类。它与被包装的值相等,并可通过 `str()`、`int()`、`float()` 和 `bool()` 进行转换;嵌套标量则是保留了原始样式与格式的普通 Python 值。

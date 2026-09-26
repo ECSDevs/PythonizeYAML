@@ -1,11 +1,22 @@
 # API reference
 
-PythonizeYAML exposes a PyYAML-compatible function API and an additive document
-API for style-aware editing.
+PythonizeYAML exposes one PyYAML-compatible API. `load()` and `load_all()`
+return style-aware `Document` objects that also behave like the ordinary
+`dict` and `list` values they wrap, and `dump()` and `dump_all()` accept those
+documents directly. Style editing is layered on the same objects.
 
-- [Loading and dumping](./functions.md)
-- [Documents and style editing](./documents.md)
+The reference is organized as follows:
 
-The package also exports `YAMLError` and its PyYAML-compatible subclasses,
-`IndentConfig`, `DEFAULT_CONFIG`, `Tagged`, scalar and collection style enums,
-`Chomping`, and `SourceSpan`.
+- [Loading and dumping](./functions.md) – the module-level functions and the
+  `YAML` / `SafeYAML` engines, with full signatures and per-argument
+  descriptions.
+- [Documents and style editing](./documents.md) – the `Document` class and
+  its members, the `DocumentMapping` / `DocumentSequence` /
+  `DocumentScalar` subclasses, `NodeRef`, `Comments`, and `DocumentStream`.
+- [Configuration, styles, and tagged values](./styles.md) – `IndentConfig`,
+  `DEFAULT_CONFIG`, the style enums, `SourceSpan`, and `Tagged`.
+- [Errors](./errors.md) – the `YAMLError` hierarchy and when each exception
+  is raised.
+
+If you are new to the package, start with the [Tutorial](../guide/) and
+return here for exact signatures.
