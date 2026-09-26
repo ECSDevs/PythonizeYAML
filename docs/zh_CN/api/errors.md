@@ -59,10 +59,10 @@ token 流不符合 YAML 语法,例如流式序列从未闭合。解析器还强�
 
 ## `PathError`
 
-路径不存在。`Document.at()` 与 `Document.node()` 对缺失路径、`Document.remove()` 对根节点,以及在标量节点之下赋值时都会抛出。
+路径不存在。`document[key]` 对缺失路径,以及在标量节点之下赋值时都会抛出。
 
 ```python
->>> yaml.load("a: 1\n").at("missing")
+>>> yaml.load("a: 1\n")["missing"]
 Traceback (most recent call last):
     ...
 PathError: no YAML node at path ('missing',)

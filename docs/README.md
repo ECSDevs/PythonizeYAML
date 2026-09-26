@@ -15,7 +15,7 @@ features:
   - title: PyYAML-compatible API
     details: Load and dump YAML with familiar functions such as load, dump, safe_load, and safe_dump.
   - title: Style-aware documents
-    details: Use Document and NodeRef to edit comments, tags, anchors, aliases, and formatting explicitly.
+    details: Use Document to edit comments, tags, anchors, aliases, and formatting on the values themselves.
 ---
 
 PythonizeYAML keeps the existing source layout when a document is loaded,

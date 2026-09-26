@@ -21,76 +21,79 @@ assert yaml.dump(document) == "service:\n  host: 127.0.0.1\n  port: 9090\n"
 Only the `8080` scalar was rewritten; the key order, indentation, and any
 comments elsewhere are untouched.
 
-## 2. Paths and `at()`
+## 2. Reading nested values
 
-For programmatic access — paths computed at runtime, deep lookups — use
-`Document.at()`. Path parts are mapping keys and sequence indexes, read
-from the outside in:
+Nested reads are chained subscripts — a document returns plain Python
+values for scalars and round-trip containers for nested collections, so the
+same syntax keeps going deeper:
 
 ```python
-document.at("service", "port")          # 9090
-document.at("artifacts", 0)             # first list item
-document.at(("service", "port"))        # a tuple works too
+document["service"]["port"]             # 9090
+document["artifacts"][0]                # first list item
 ```
 
-A missing path raises `PathError` rather than returning `None`, which keeps
-typos and schema drift loud:
+`Document.get()` is the dict-style read with a fallback. A tuple or list is
+treated as a nested path:
+
+```python
+document.get("service", {}).get("port")  # 9090
+document.get(("service", "port"))        # 9090
+document.get("missing", "fallback")      # "fallback"
+```
+
+Direct subscripts keep typos loud — a missing path raises `PathError`:
 
 ```python
 from pythonizeyaml import PathError
 
 try:
-    document.at("service", "poort")
+    document["service"]["poort"]
 except PathError as error:
     print(error)  # no YAML node at path ('service', 'poort')
 ```
 
-`document[key]` and `document.at(...)` return plain Python values for
-scalars and round-trip containers for nested collections; both support
-assignment through `document[key] = value`.
+## 3. Creating and replacing nodes
 
-## 3. Creating and replacing nodes with `set()`
-
-Assignment requires the parent to exist. `Document.set()` instead creates
-missing mapping keys along the path, applies style options in the same
-call, and returns a `NodeRef` for the written node:
+Assignment has plain-`dict` semantics: the parent must exist, and
+intermediate levels are created by assigning containers first:
 
 ```python
 document = yaml.load("service:\n  host: 127.0.0.1\n")
-ref = document.set("service", "healthcheck", value="GET /health")
+document["service"]["healthcheck"] = "GET /health"
 ```
 
-Every style option from the [next chapter](./styles.md) can ride along —
-comments, quotes, tags, anchors:
+Styles, comments, tags, and anchors live on the values themselves — see
+the [next chapter](./styles.md). `set()` applies several fields in one
+validated step:
 
 ```python
-document.set(
-    "service", "timeout",
-    value=30,
+document["service"]["timeout"] = 30
+document["service"]["timeout"].set(
     inline="# seconds before we give up",
 )
 ```
 
-All arguments are validated before anything is applied. An invalid
+`set()` validates everything before applying anything. An invalid
 combination raises `StyleError` and leaves the document exactly as it was.
 
 ## 4. Working with sequences
 
-Sequences have dedicated operations that keep item styles and source
-metadata aligned with the data:
+Sequence edits are ordinary `list` calls on the wrapped container, and the
+document keeps item styles and source metadata aligned with the data:
 
 ```python
 document = yaml.load("artifacts:\n  - pythonizeyaml\n")
 
-document.append("artifacts", value="pythonizeyaml-docs")
-document.insert("artifacts", index=0, value="mirror")
-removed = document.remove("artifacts", 0)
+document["artifacts"].append("pythonizeyaml-docs")
+document["artifacts"].insert(0, "mirror")
+document["artifacts"].pop(0)
 ```
 
-`append()` and `insert()` accept the same style options as `set()` and
-return the `NodeRef` of the affected item. `remove()` returns the removed
-value and refuses to remove the document root or any node that still has
-aliases pointing at it.
+Removal also works through `del` — on the document itself for mapping keys
+(`del document["key"]`) and on containers for indexes (`del
+document["items"][0]`). Removing a node discards its comments, styles,
+tags, and anchors together with it, and refuses to remove any node that
+still has aliases pointing at it.
 
 ## 5. Building documents from scratch
 
@@ -104,7 +107,8 @@ document = yaml.Document.new(
         "artifacts": ["pythonizeyaml"],
     }
 )
-document.set("service", "debug", value=False, inline="# set true locally")
+document["service"]["debug"] = False
+document["service"]["debug"].inline = "# set true locally"
 
 text = document.dump()
 ```

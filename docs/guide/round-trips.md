@@ -32,12 +32,12 @@ def publish(version: str) -> None:
     path = Path("release.yaml")
     document = load_document(path.read_text(encoding="utf-8"))
 
-    document.node("version").update(
+    document["version"].set(
         value=version,
         style=ScalarStyle.SINGLE,
         inline="# Release version",
     )
-    document.node("channel").comments.before = ["# Published channel"]
+    document["channel"].comments.before = ["# Published channel"]
     path.write_text(document.dump(), encoding="utf-8")
 
 
@@ -45,8 +45,8 @@ if __name__ == "__main__":
     publish("0.4.0")
 ```
 
-`NodeRef.update()` validates all requested style fields before applying the
-change. If a later field is invalid, the document is restored to its previous
+`set()` validates all requested style fields before applying the change.
+If a later field is invalid, the document is restored to its previous
 state.
 
 ## 3. Verify the result
@@ -69,17 +69,16 @@ specific node. `document.source` remains the original source text; use
 
 ## 4. Add a new field with style metadata
 
-`Document.set()` creates missing mapping paths and returns a `NodeRef`:
+Assign the value like a plain `dict` — the assigned value is wrapped, so
+it can be styled immediately:
 
 ```python
-document.set(
-    "build",
-    "command",
-    value="python -m build",
+document["build"]["command"] = "python -m build"
+document["build"]["command"].set(
     style=ScalarStyle.DOUBLE,
     before="# Command used by CI",
 )
 ```
 
-Use `document.node("artifacts").collection_style = "flow"` when a collection
+Use `document["artifacts"].collection_style = "flow"` when a collection
 should be emitted as `[pythonizeyaml, pythonizeyaml-docs]`.

@@ -17,7 +17,7 @@ read like PyYAML code.
 2. [Editing values](./editing.md) - paths, assignment, `set()`, sequences,
    and building documents from scratch.
 3. [Comments, styles, tags, and anchors](./styles.md) - the style-aware
-   editing layer exposed through `NodeRef`.
+   editing layer carried by the values themselves.
 4. [Loading untrusted YAML](./safety.md) - `safe_load()`, `Tagged`, and the
    error model at a trust boundary.
 

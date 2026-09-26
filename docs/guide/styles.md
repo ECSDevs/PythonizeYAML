@@ -2,33 +2,40 @@
 
 The previous chapters edited values. This chapter uses the same objects to
 edit everything PyYAML throws away: comments, quoting, block scalar
-details, collection layout, tags, and anchors. All of it is reached through
-`NodeRef` views, so the chapter starts there.
+details, collection layout, tags, and anchors. Every value in a document
+carries this API directly, so there are no separate node handles to learn.
 
-## 1. Node references
+## 1. Values are the node handles
 
-`Document.node()` returns a `NodeRef` — a stable view of one node:
+Values read out of a document are round-trip wrappers: mappings and
+sequences are `dict`/`list` subclasses, and scalars are subclasses of their
+own type. They expose the value's source position, every style property as
+attributes, and the node's comments:
 
 ```python
 import pythonizeyaml as yaml
 
 document = yaml.load("version: '0.3.0'\nchannel: stable\n")
-version = document.node("version")
+version = document["version"]
+version.style
+version.span
+version.comments
 ```
 
-A `NodeRef` is not the value itself; it is a handle to a location. It
-exposes the value (`version.value`), the source position
-(`version.span`), every style property as attributes, and the node's
-comments. Without arguments, `document.node()` is the document root.
+Wrappers compare and hash like the plain values they wrap, so they work
+anywhere a plain value would. A wrapper resolves its location by identity:
+after insertions or removals shift siblings around, the same object still
+styles the same node, and styling a value that has been removed from the
+document raises `PathError`.
 
 ## 2. Comments
 
 Comments live in three positions and survive value edits:
 
 ```python
-document.node("channel").comments.before = ["# Published channel"]
-document.node("channel").comments.inline = "# stable or beta"
-document.node("channel").comments.after = []  # clear comments below
+document["channel"].comments.before = ["# Published channel"]
+document["channel"].comments.inline = "# stable or beta"
+document["channel"].comments.after = []  # clear comments below
 ```
 
 ```yaml
@@ -43,13 +50,13 @@ properties without prior assignment.
 
 ## 3. Scalar styles
 
-Quoting and block styles are properties of the node:
+Quoting and block styles are properties of the value:
 
 ```python
-document.node("version").style = "single"     # keeps '0.4.0' quoted
-document.node("notes").style = "literal"      # block style with |
-document.node("notes").chomping = "keep"      # | + keeps trailing newlines
-document.node("notes").block_indent_indicator = 2
+document["version"].style = "single"     # keeps '0.4.0' quoted
+document["notes"].style = "literal"      # block style with |
+document["notes"].chomping = "keep"      # | + keeps trailing newlines
+document["notes"].block_indent_indicator = 2
 ```
 
 - `style` is one of `plain`, `single`, `double`, `literal`, `folded`
@@ -69,7 +76,7 @@ plain, for instance) are rejected as well.
 Mappings and sequences switch between block and flow layout the same way:
 
 ```python
-document.node("artifacts").collection_style = "flow"
+document["artifacts"].collection_style = "flow"
 ```
 
 ```yaml
@@ -86,21 +93,23 @@ Tags and anchors are node properties; aliases are separate nodes pointing
 at an anchor:
 
 ```python
-document.node("base").tag = "!custom"
-document.node("base").anchor = "base-values"
+document["base"].tag = "!custom"
+document["base"].anchor = "base-values"
 
-document.alias("override", target=document.node("base"))
+document.alias("override", target=document["base"])
 ```
 
 The `alias()` call anchors the target if needed and makes the path an
-alias (`*base-values`). On the alias node, `is_alias` is `True` and
-`alias_target` returns the target `NodeRef`; on the target, `anchor`
-returns the name. Removing an anchor that still has aliases raises
-`AliasError` — drop the aliases first.
+alias (`*base-values`). The target can be the value itself, as above, or a
+path (`target="base"`). Alias entries read through to their target, so
+styling through an alias styles the anchor target. Removing an anchor that
+still has aliases raises `AliasError` — drop the aliases first.
 
 ## 6. Document-level metadata
 
-Directives and document markers are properties of the document:
+Directives and document markers are properties of the document. A
+container-root document is also its own root value, so the styling API
+applies to the whole document the same way:
 
 ```python
 document.directives = ["%YAML 1.1"]
@@ -113,10 +122,10 @@ The boolean markers control the leading `---` and trailing `...`.
 
 ## 7. Atomic multi-field edits
 
-`NodeRef.update()` applies several fields in one validated step:
+`set()` applies several fields in one validated step:
 
 ```python
-document.node("version").update(
+document["version"].set(
     value="0.4.0",
     style="double",
     inline="# release version",
@@ -126,8 +135,8 @@ document.node("version").update(
 The whole set of changes is validated first; if any field is invalid the
 document is restored and nothing is applied. Unknown field names raise
 `TypeError`, which catches misspellings that silent assignment would let
-through. `update()` returns the same `NodeRef`, so calls chain.
+through.
 
-For the complete member list of `Document`, `NodeRef`, and friends, see the
+For the complete member list of `Document` and the value API, see the
 [reference](../api/documents.md). The next chapter covers loading YAML
 whose contents you do not trust.

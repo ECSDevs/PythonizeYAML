@@ -27,9 +27,9 @@ from pythonizeyaml import load_document
 
 def test_alias_to_a_new_path_appears_in_the_data_and_dumps():
     document = load_document("a: &anc 1\nb: 2\n")
-    document.alias("copy", target=document.node("a"))
+    document.alias("copy", target=document["a"])
     assert "copy" in document.keys()
-    assert document.at("copy") == 1
+    assert document["copy"] == 1
     assert document.data["copy"] == 1
     assert ("copy", 1) in list(document.items())
     assert document.dump() == "a: &anc 1\nb: 2\ncopy: *anc\n"
@@ -37,29 +37,29 @@ def test_alias_to_a_new_path_appears_in_the_data_and_dumps():
 
 def test_alias_to_a_new_path_anchors_the_target_when_needed():
     document = load_document("a: 1\nb: 2\n")
-    document.alias("copy", target=document.node("a"))
+    document.alias("copy", target=document["a"])
     assert document.dump() == "a: &id001 1\nb: 2\ncopy: *id001\n"
 
 
 def test_alias_to_a_new_nested_path_is_created_and_dumped():
     document = load_document("a: &anc 1\nb: 2\n")
-    document.alias(("x", "y"), target=document.node("a"))
+    document.alias(("x", "y"), target=document["a"])
     assert document.data["x"]["y"] == 1
-    assert document.at("x", "y") == 1
+    assert document.get(("x", "y")) == 1
     assert document.dump() == "a: &anc 1\nb: 2\nx:\n  y: *anc\n"
 
 
 def test_alias_to_a_new_path_survives_a_reload():
     document = load_document("a: &anc 1\nb: 2\n")
-    document.alias("copy", target=document.node("a"))
+    document.alias("copy", target=document["a"])
     reloaded = load_document(document.dump())
     assert reloaded.data["copy"] == 1
 
 
 def test_alias_to_an_existing_path_resolves_in_the_data_views():
     document = load_document("a: 1\nb: 2\n")
-    document.alias("b", target=document.node("a"))
-    assert document.at("b") == 1
+    document.alias("b", target=document["a"])
+    assert document["b"] == 1
     assert document.data["b"] == 1
     assert list(document.items()) == [("a", 1), ("b", 1)]
     assert list(document.values()) == [1, 1]
@@ -68,9 +68,9 @@ def test_alias_to_an_existing_path_resolves_in_the_data_views():
 
 def test_the_resolved_data_view_tracks_later_target_changes():
     document = load_document("a: 1\nb: 2\n")
-    document.alias("b", target=document.node("a"))
-    document.node("a").value = 99
-    assert document.at("b") == 99
+    document.alias("b", target=document["a"])
+    document["a"].value = 99
+    assert document["b"] == 99
     assert document.data["b"] == 99
     assert list(document.values()) == [99, 99]
 

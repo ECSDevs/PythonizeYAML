@@ -77,12 +77,11 @@ raise `SerializerError` when used as mapping keys.
 
 ## `PathError`
 
-A path does not exist. Raised by `Document.at()` and `Document.node()` for
-missing paths, by `Document.remove()` for the root, and by assignments
-below a scalar node.
+A path does not exist. Raised by `document[key]` for
+missing paths, and by assignments below a scalar node.
 
 ```python
->>> yaml.load("a: 1\n").at("missing")
+>>> yaml.load("a: 1\n")["missing"]
 Traceback (most recent call last):
     ...
 PathError: no YAML node at path ('missing',)

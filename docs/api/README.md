@@ -12,7 +12,8 @@ The reference is organized as follows:
   descriptions.
 - [Documents and style editing](./documents.md) – the `Document` class and
   its members, the `DocumentMapping` / `DocumentSequence` /
-  `DocumentScalar` subclasses, `NodeRef`, `Comments`, and `DocumentStream`.
+  `DocumentScalar` subclasses, the styling API on values, `Comments`, and
+  `DocumentStream`.
 - [Configuration, styles, and tagged values](./styles.md) – `IndentConfig`,
   `DEFAULT_CONFIG`, the style enums, `SourceSpan`, and `Tagged`.
 - [Errors](./errors.md) – the `YAMLError` hierarchy and when each exception

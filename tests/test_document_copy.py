@@ -30,9 +30,9 @@ from pythonizeyaml import CollectionStyle, Document, load_document
 def test_deepcopy_of_a_loaded_document_is_independent():
     document = load_document("a: 1\nb: x\n")
     clone = copy.deepcopy(document)
-    clone.node("a").value = 2
-    assert document.at("a") == 1
-    assert clone.at("a") == 2
+    clone["a"].value = 2
+    assert document["a"] == 1
+    assert clone["a"] == 2
     assert document.dump() == "a: 1\nb: x\n"
     assert clone.dump() == "a: 2\nb: x\n"
 
@@ -54,9 +54,9 @@ def test_deepcopy_of_a_new_document_is_independent():
 
 def test_deepcopy_copies_the_override_registries():
     document = Document.new({"a": {"b": 1}})
-    document.node("a").collection_style = CollectionStyle.FLOW
+    document["a"].collection_style = CollectionStyle.FLOW
     clone = copy.deepcopy(document)
-    clone.node("a").collection_style = CollectionStyle.BLOCK
+    clone["a"].collection_style = CollectionStyle.BLOCK
     assert document.dump() == "a: {b: 1}\n"
     assert clone.dump() == "a:\n  b: 1\n"
 

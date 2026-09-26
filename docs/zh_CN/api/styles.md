@@ -66,7 +66,7 @@ literal 与 folded 样式要求字符串值;`plain` 会拒绝普通写法会解�
 SourceSpan(start, end, line, column)
 ```
 
-不可变 dataclass,定位节点在原始文本中的位置;通过 `NodeRef.span` 在已加载文档上可用。
+不可变 dataclass,定位节点在原始文本中的位置;通过 `value.span` 在已加载文档上可用。
 
 - **start** —— 节点起始字节偏移。
 - **end** —— 节点结束后的字节偏移。

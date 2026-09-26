@@ -202,10 +202,9 @@ def _reject_safe_document_tags(document: Any, safe: bool) -> None:
     """
     if not safe:
         return
-    from .document import NodeRef
 
     for path, _value in document._iter_paths():
-        tag = NodeRef(document, path).tag
+        tag = document._tag_at(path)
         if tag is not None and not tag.startswith("!!"):
             raise RepresenterError(
                 f"safe_dump does not support custom tags (found {tag!r})"

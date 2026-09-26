@@ -145,7 +145,7 @@ def test_safe_dump_rejects_a_document_with_tagged_values_in_its_data():
 
 def test_safe_dump_rejects_a_document_with_a_registry_set_custom_tag():
     document = py.load_document("a: 1\n")
-    document.node("a").tag = "!app/custom"
+    document["a"].tag = "!app/custom"
     with pytest.raises(RepresenterError):
         py.safe_dump(document)
 

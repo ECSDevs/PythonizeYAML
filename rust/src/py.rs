@@ -194,7 +194,12 @@ fn materialize_untagged(
             // the raw string instead of raising a constructor error.
             let scalar =
                 apply_explicit_tag(scalar, node.tag.as_deref(), node.span).map_err(native_error)?;
-            materialize_scalar(py, &scalar, node.span)
+            let value = materialize_scalar(py, &scalar, node.span)?;
+            if safe {
+                Ok(value)
+            } else {
+                wrap_scalar_value(py, value)
+            }
         }
         NodeKind::Alias(target) => materialize_node(py, document, *target, handle, safe, memo),
         NodeKind::Tagged { tag, value } => {
@@ -459,6 +464,15 @@ fn apply_explicit_tag(scalar: &Scalar, tag: Option<&str>, span: Span) -> Result<
     Ok(result)
 }
 
+/// Round-trip loads wrap every materialized scalar in the Python subclass
+/// from `pythonizeyaml.nodes.wrap_scalar` that carries the styling API;
+/// `bool` and `None` have no subclassable type and stay plain.
+fn wrap_scalar_value(py: Python<'_>, value: Py<PyAny>) -> PyResult<Py<PyAny>> {
+    let nodes = py.import("pythonizeyaml.nodes")?;
+    let wrapped = nodes.getattr("wrap_scalar")?.call1((value,))?;
+    Ok(wrapped.unbind())
+}
+
 fn materialize_scalar(py: Python<'_>, scalar: &Scalar, span: Span) -> PyResult<Py<PyAny>> {
     match &scalar.kind {
         ScalarKind::Null => Ok(py.None()),
@@ -576,7 +590,16 @@ pub fn dump_value(
     config: EmitConfig,
     explicit_start: Option<bool>,
 ) -> PyResult<String> {
-    let handle = value.getattr("_pyy_handle").ok();
+    // Only a real document handle counts: the round-trip scalar wrappers
+    // carry `_pyy_handle = None` as a class default, and a bare `None`
+    // attribute must fall through to the plain dump path.
+    let handle = value.getattr("_pyy_handle").ok().and_then(|candidate| {
+        candidate
+            .cast::<NativeDocument>()
+            .ok()
+            .cloned()
+            .map(|document| document.into_any())
+    });
     let node_id = value
         .getattr("_pyy_node_id")
         .ok()
@@ -803,33 +826,55 @@ fn collect_edits(
                 ));
                 return Ok(());
             };
-            let ids = wrapper_node_ids(value, "_pyy_node_ids", list.len());
+            let ids = value
+                .getattr("_pyy_node_ids")
+                .ok()
+                .and_then(|item| item.extract::<Vec<i64>>().ok());
+            let Some(ids) = ids else {
+                // A plain (user-assigned) list carries no per-item node
+                // identity, so the whole container is re-emitted from the data.
+                edits.push((
+                    node.span,
+                    canonical_edit(py, value, config, node_base_indent(document, node.span))?,
+                ));
+                return Ok(());
+            };
             if ids.len() != items.len() {
                 if suppress_structural {
-                    // A structural edit (a removal) shifted item positions, so
-                    // the wrapper's own per-item ids — not the zip position —
-                    // map each remaining value to its true source node.
-                    if ids
-                        .iter()
-                        .any(|id| *id < 0 || *id as usize >= document.arena.nodes.len())
-                    {
-                        edits.push((
-                            node.span,
-                            canonical_edit(
-                                py,
-                                value,
-                                config,
-                                node_base_indent(document, node.span),
-                            )?,
-                        ));
-                        return Ok(());
-                    }
-                    for (child_id, child) in ids.iter().zip(list.iter()) {
+                    // A structural edit (a removal or an insertion) shifted item
+                    // positions, so the wrapper's own per-item ids — not the zip
+                    // position — map each remaining value to its true source node.
+                    let mut surviving: Vec<usize> = Vec::new();
+                    for (index, child) in list.iter().enumerate() {
+                        let child_id = ids.get(index).copied().unwrap_or(-1);
+                        if child_id < 0 {
+                            // A Python-created item: it has no source line to
+                            // reuse, and the caller re-inserts it through an
+                            // external patch, so emit nothing for it here.
+                            // Falling back to a whole-container re-emit would
+                            // overlap those external patches and get dropped,
+                            // silently losing the insertion.
+                            continue;
+                        }
+                        let child_id = child_id as usize;
+                        if child_id >= document.arena.nodes.len() {
+                            edits.push((
+                                node.span,
+                                canonical_edit(
+                                    py,
+                                    value,
+                                    config,
+                                    node_base_indent(document, node.span),
+                                )?,
+                            ));
+                            return Ok(());
+                        }
+                        surviving.push(child_id);
                         collect_edits(
                             py,
                             &child,
                             document,
-                            *child_id as usize,
+                            child_id,
                             config,
                             true,
                             edits,
@@ -837,7 +882,6 @@ fn collect_edits(
                     }
                     // Source entries whose node no longer exists in the data
                     // must be deleted; nothing else emits their lines.
-                    let surviving: Vec<usize> = ids.iter().map(|id| *id as usize).collect();
                     for child_id in items.iter() {
                         if !surviving.contains(child_id) {
                             let span = document.arena.node(*child_id).span;
@@ -1622,7 +1666,13 @@ pub fn dump_value_with_patches(
     node_id_override: Option<usize>,
 ) -> PyResult<String> {
     let external = parse_patch_list(patches)?;
-    let inferred_handle = value.getattr("_pyy_handle").ok();
+    let inferred_handle = value.getattr("_pyy_handle").ok().and_then(|candidate| {
+        candidate
+            .cast::<NativeDocument>()
+            .ok()
+            .cloned()
+            .map(|document| document.into_any())
+    });
     let handle = handle_override
         .map(|handle| handle.clone().into_any())
         .or(inferred_handle);
@@ -2157,6 +2207,57 @@ mod tests {
             )
             .unwrap();
             assert_eq!(text, "Héllo\n");
+        });
+    }
+
+    #[test]
+    fn python_created_items_are_skipped_instead_of_wholesale_rewrites() {
+        with_python(|py| {
+            let (handle, model) = handle_for(py, "items:\n  - one\n  - two\nother: x\n");
+            let root_id = model.documents[0].root;
+            let items_id = mapping_node_id(&model, root_id, "items");
+            let item_ids: Vec<i64> = match &model.arena.node(items_id).kind {
+                NodeKind::Sequence(items) => items.iter().map(|id| *id as i64).collect(),
+                _ => panic!("expected a sequence"),
+            };
+            // The edited data: the two source items keep their node ids and a
+            // third item was appended in Python (id -1). The external patch
+            // styles `other`, outside the list.
+            let list_class = py.eval(c"type('L', (list,), {})", None, None).unwrap();
+            let items = list_class.call0().unwrap();
+            for name in ["one", "two", "three"] {
+                items.call_method1("append", (name,)).unwrap();
+            }
+            let mut ids = item_ids.clone();
+            ids.push(-1);
+            items
+                .setattr("_pyy_node_ids", PyList::new(py, ids).unwrap())
+                .unwrap();
+            items.setattr("_pyy_dirty", true).unwrap();
+            let root = wrapper_class(py).call0().unwrap();
+            root.set_item("items", &items).unwrap();
+            root.set_item("other", "x").unwrap();
+            root.setattr("_pyy_dirty", true).unwrap();
+            let other_id = mapping_node_id(&model, root_id, "other");
+            let span = model.arena.node(other_id).value_span;
+            let patch = format!("[{}, {}, '\"x\"']", span.start, span.end);
+            let patch_c = std::ffi::CString::new(patch).unwrap();
+            let patches =
+                PyList::new(py, [py.eval(patch_c.as_c_str(), None, None).unwrap()]).unwrap();
+            let text = dump_value_with_patches(
+                py,
+                &root,
+                EmitConfig::default(),
+                None,
+                &patches,
+                Some(handle.bind(py)),
+                Some(root_id),
+            )
+            .unwrap();
+            // The appended item is re-inserted by the caller's external patch,
+            // so the native side must skip it; a whole-container rewrite here
+            // would overlap nothing and duplicate the item.
+            assert_eq!(text, "items:\n  - one\n  - two\nother: \"x\"\n");
         });
     }
 

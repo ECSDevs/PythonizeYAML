@@ -17,63 +17,67 @@ assert yaml.dump(document) == "service:\n  host: 127.0.0.1\n  port: 9090\n"
 
 只有 `8080` 这个标量被重写;键的顺序、缩进以及别处的注释都原样保留。
 
-## 2. 路径与 `at()`
+## 2. 读取嵌套值
 
-要程序化地访问——运行时计算的路径、深层查找——请使用 `Document.at()`。路径部分是映射键和序列索引,由外向内:
+嵌套读取就是链式下标——文档对标量返回普通 Python 值,对嵌套集合返回往返容器,所以同样的语法可以不断深入:
 
 ```python
-document.at("service", "port")          # 9090
-document.at("artifacts", 0)             # 列表第一项
-document.at(("service", "port"))        # 也可以传元组
+document["service"]["port"]             # 9090
+document["artifacts"][0]                # 列表第一项
 ```
 
-路径不存在时抛出 `PathError` 而不是返回 `None`,这让拼写错误和结构漂移无法悄悄溜过:
+`Document.get()` 是带回退值的 dict 式读取。元组或列表会按嵌套路径处理:
+
+```python
+document.get("service", {}).get("port")  # 9090
+document.get(("service", "port"))        # 9090
+document.get("missing", "fallback")      # "fallback"
+```
+
+直接下标让拼写错误无处藏身——路径不存在时抛出 `PathError`:
 
 ```python
 from pythonizeyaml import PathError
 
 try:
-    document.at("service", "poort")
+    document["service"]["poort"]
 except PathError as error:
     print(error)  # no YAML node at path ('service', 'poort')
 ```
 
-`document[key]` 与 `document.at(...)` 对标量返回普通 Python 值,对嵌套集合返回往返容器;两者都支持通过 `document[key] = value` 赋值。
+## 3. 创建和替换节点
 
-## 3. 用 `set()` 创建和替换节点
-
-赋值要求父节点已存在。`Document.set()` 则会沿路径创建缺失的映射键,在同一次调用中应用样式选项,并返回被写入节点的 `NodeRef`:
+赋值遵循普通 `dict` 语义:父节点必须已存在,中间层级先赋值容器即可逐层创建:
 
 ```python
 document = yaml.load("service:\n  host: 127.0.0.1\n")
-ref = document.set("service", "healthcheck", value="GET /health")
+document["service"]["healthcheck"] = "GET /health"
 ```
 
-[下一章](./styles.md)的所有样式选项都可以一并传入——注释、引号、标签、锚点:
+样式、注释、标签与锚点直接在值上管理——见[下一章](./styles.md)。`set()` 在一次校验过的步骤里应用多个字段:
 
 ```python
-document.set(
-    "service", "timeout",
-    value=30,
+document["service"]["timeout"] = 30
+document["service"]["timeout"].set(
     inline="# seconds before we give up",
 )
 ```
 
-所有参数都会先校验再应用。无效组合会抛出 `StyleError`,文档保持原样。
+`set()` 会先校验所有内容再应用。无效组合抛出 `StyleError`,文档保持原样。
 
 ## 4. 操作序列
 
-序列有专门的操作,保证条目样式和源元数据与数据同步移动:
+序列编辑就是对被包装容器做普通的 `list` 调用,文档会保证条目样式和源元数据与数据同步移动:
 
 ```python
 document = yaml.load("artifacts:\n  - pythonizeyaml\n")
 
-document.append("artifacts", value="pythonizeyaml-docs")
-document.insert("artifacts", index=0, value="mirror")
-removed = document.remove("artifacts", 0)
+document["artifacts"].append("pythonizeyaml-docs")
+document["artifacts"].insert(0, "mirror")
+document["artifacts"].pop(0)
 ```
 
-`append()` 与 `insert()` 接受与 `set()` 相同的样式选项,并返回受影响条目的 `NodeRef`。`remove()` 返回被移除的值,并且拒绝移除文档根节点以及仍被别名指向的节点。
+移除也可以用 `del`——映射键在文档本体上(`del document["key"]`),索引在容器上(`del document["items"][0]`)。移除节点时会连同它的注释、样式、标签与锚点一起丢弃,并且拒绝移除仍被别名指向的节点。
 
 ## 5. 从零构建文档
 
@@ -86,7 +90,8 @@ document = yaml.Document.new(
         "artifacts": ["pythonizeyaml"],
     }
 )
-document.set("service", "debug", value=False, inline="# set true locally")
+document["service"]["debug"] = False
+document["service"]["debug"].inline = "# set true locally"
 
 text = document.dump()
 ```

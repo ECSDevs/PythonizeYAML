@@ -76,4 +76,4 @@ Path("environments.yaml").write_text(yaml.dump_all(documents), encoding="utf-8")
 
 `load_all()` returns a lazy generator of `Document` objects. Each one exposes
 its comments, styles, and document markers as first-class properties through
-`Document.node()`; see [Documents and style editing](../api/documents.md).
+the values themselves; see [Documents and style editing](../api/documents.md).

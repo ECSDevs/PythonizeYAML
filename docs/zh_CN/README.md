@@ -15,7 +15,7 @@ features:
   - title: 兼容 PyYAML 的 API
     details: 使用 load、dump、safe_load、safe_dump 等熟悉的函数加载与导出 YAML。
   - title: 样式感知的文档对象
-    details: 通过 Document 和 NodeRef 显式编辑注释、标签、锚点、别名和格式。
+    details: 通过 Document 在值上显式编辑注释、标签、锚点、别名和格式。
 ---
 
 PythonizeYAML 在文档被加载、修改并再次导出的过程中,保持原有源文件布局不变。

@@ -78,7 +78,7 @@ SourceSpan(start, end, line, column)
 ```
 
 An immutable dataclass locating a node in the original text, available
-through `NodeRef.span` for loaded documents.
+through `value.span` for loaded documents.
 
 - **start** – first byte offset of the node.
 - **end** – byte offset just past the node.

@@ -29,17 +29,18 @@ import pytest
 
 import pythonizeyaml as py
 from pythonizeyaml import ConstructorError, Tagged
+from pythonizeyaml.nodes import RoundTripDecimal, RoundTripFloat
 
 
 def test_exactly_representable_decimal_stays_float():
     assert py.load("value: 1.5\n")["value"] == 1.5
-    assert type(py.load("value: 1.5\n")["value"]) is float
+    assert type(py.load("value: 1.5\n")["value"]) is RoundTripFloat
 
 
 def test_inexact_decimal_becomes_arbitrary_precision_decimal():
     value = py.load("value: 0.1\n")["value"]
     assert value == Decimal("0.1")
-    assert type(value) is Decimal
+    assert type(value) is RoundTripDecimal
 
 
 def test_out_of_range_decimal_does_not_become_infinity():
@@ -49,13 +50,13 @@ def test_out_of_range_decimal_does_not_become_infinity():
     # decimal point and a signed exponent.)
     value = py.load("value: 1.0e+400\n")["value"]
     assert value == Decimal("1.0e+400")
-    assert type(value) is Decimal
+    assert type(value) is RoundTripDecimal
     assert py.safe_load("1e400\n") == "1e400"
 
 
 def test_explicit_float_and_decimal_tags_override_implicit_resolution():
-    assert type(py.load("value: !!float 0.1\n")["value"]) is float
-    assert type(py.load("value: !!decimal 1.5\n")["value"]) is Decimal
+    assert type(py.load("value: !!float 0.1\n")["value"]) is RoundTripFloat
+    assert type(py.load("value: !!decimal 1.5\n")["value"]) is RoundTripDecimal
 
 
 def test_unknown_tags_are_exposed_and_round_trip():
@@ -148,9 +149,9 @@ def test_dump_with_patches_rejects_spans_outside_the_source():
 
 def test_comment_patches_align_on_non_ascii_sources():
     document = py.load_document("ключ: значение\nдругой: два\n")
-    document.node("другой").comments.inline = "# y"
+    document["другой"].comments.inline = "# y"
     assert document.dump() == "ключ: значение\nдругой: два  # y\n"
-    document.node("ключ").comments.inline = "# x"
+    document["ключ"].comments.inline = "# x"
     assert document.dump() == "ключ: значение  # x\nдругой: два  # y\n"
 
 

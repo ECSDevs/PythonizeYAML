@@ -29,12 +29,12 @@ def publish(version: str) -> None:
     path = Path("release.yaml")
     document = load_document(path.read_text(encoding="utf-8"))
 
-    document.node("version").update(
+    document["version"].set(
         value=version,
         style=ScalarStyle.SINGLE,
         inline="# Release version",
     )
-    document.node("channel").comments.before = ["# Published channel"]
+    document["channel"].comments.before = ["# Published channel"]
     path.write_text(document.dump(), encoding="utf-8")
 
 
@@ -42,7 +42,7 @@ if __name__ == "__main__":
     publish("0.4.0")
 ```
 
-`NodeRef.update()` 会先校验所有请求的样式字段,再应用变更。如果后面的字段无效,文档会恢复到之前的状态。
+`set()` 会先校验所有请求的样式字段,再应用变更。如果后面的字段无效,文档会恢复到之前的状态。
 
 ## 3. 验证结果
 
@@ -62,16 +62,14 @@ artifacts:
 
 ## 4. 添加带样式元数据的新字段
 
-`Document.set()` 会创建缺失的映射路径,并返回一个 `NodeRef`:
+像普通 `dict` 一样先赋值——被赋的值会被包装,可以立即设置样式:
 
 ```python
-document.set(
-    "build",
-    "command",
-    value="python -m build",
+document["build"]["command"] = "python -m build"
+document["build"]["command"].set(
     style=ScalarStyle.DOUBLE,
     before="# Command used by CI",
 )
 ```
 
-如果希望某个集合以 `[pythonizeyaml, pythonizeyaml-docs]` 的形式输出,可以使用 `document.node("artifacts").collection_style = "flow"`。
+如果希望某个集合以 `[pythonizeyaml, pythonizeyaml-docs]` 的形式输出,可以使用 `document["artifacts"].collection_style = "flow"`。

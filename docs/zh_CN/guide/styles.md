@@ -1,28 +1,31 @@
 # 注释、样式、标签与锚点
 
-前几章编辑的是值。本章用同样的对象编辑 PyYAML 会丢掉的一切:注释、引号、块标量细节、集合布局、标签与锚点。这些能力都通过 `NodeRef` 视图使用,所以本章从它讲起。
+前几章编辑的是值。本章用同样的对象编辑 PyYAML 会丢掉的一切:注释、引号、块标量细节、集合布局、标签与锚点。文档中的每个值都直接携带这套 API,因此不需要学习额外的节点句柄。
 
-## 1. 节点引用
+## 1. 值就是节点句柄
 
-`Document.node()` 返回一个 `NodeRef` —— 某个节点的稳定视图:
+从文档读出的值都是往返包装:映射与序列是 `dict`/`list` 的子类,标量是其自身类型的子类。它们暴露值的源位置、所有样式属性以及节点的注释:
 
 ```python
 import pythonizeyaml as yaml
 
 document = yaml.load("version: '0.3.0'\nchannel: stable\n")
-version = document.node("version")
+version = document["version"]
+version.style
+version.span
+version.comments
 ```
 
-`NodeRef` 不是值本身,而是指向位置的句柄。它暴露值(`version.value`)、源位置(`version.span`)、所有样式属性以及节点的注释。不带参数时,`document.node()` 是文档根。
+包装值与普通值的相等比较和哈希完全一致,可以在任何使用普通值的地方使用。包装值按身份解析自己的位置:当插入或删除使兄弟节点位移后,同一个对象仍然样式化同一个节点;样式化一个已从文档中移除的值会抛出 `PathError`。
 
 ## 2. 注释
 
 注释存在于三个位置,并会在值编辑后保留:
 
 ```python
-document.node("channel").comments.before = ["# Published channel"]
-document.node("channel").comments.inline = "# stable or beta"
-document.node("channel").comments.after = []  # 清空下方的注释
+document["channel"].comments.before = ["# Published channel"]
+document["channel"].comments.inline = "# stable or beta"
+document["channel"].comments.after = []  # 清空下方的注释
 ```
 
 ```yaml
@@ -34,13 +37,13 @@ channel: stable  # stable or beta
 
 ## 3. 标量样式
 
-引号与块样式是节点的属性:
+引号与块样式是值的属性:
 
 ```python
-document.node("version").style = "single"     # 让 '0.4.0' 保持引号
-document.node("notes").style = "literal"      # 使用 | 的块样式
-document.node("notes").chomping = "keep"      # | + 保留末尾换行
-document.node("notes").block_indent_indicator = 2
+document["version"].style = "single"     # 让 '0.4.0' 保持引号
+document["notes"].style = "literal"      # 使用 | 的块样式
+document["notes"].chomping = "keep"      # | + 保留末尾换行
+document["notes"].block_indent_indicator = 2
 ```
 
 - `style` 是 `plain`、`single`、`double`、`literal`、`folded` 之一(字符串会被转换为 `ScalarStyle` 枚举)。
@@ -54,7 +57,7 @@ document.node("notes").block_indent_indicator = 2
 映射与序列以同样的方式在块式与流式之间切换:
 
 ```python
-document.node("artifacts").collection_style = "flow"
+document["artifacts"].collection_style = "flow"
 ```
 
 ```yaml
@@ -68,17 +71,17 @@ artifacts: [pythonizeyaml, pythonizeyaml-docs]
 标签和锚点是节点属性;别名是指向锚点的独立节点:
 
 ```python
-document.node("base").tag = "!custom"
-document.node("base").anchor = "base-values"
+document["base"].tag = "!custom"
+document["base"].anchor = "base-values"
 
-document.alias("override", target=document.node("base"))
+document.alias("override", target=document["base"])
 ```
 
-`alias()` 调用会在需要时为目标加锚点,并把该路径变成别名(`*base-values`)。在别名节点上,`is_alias` 为 `True`,`alias_target` 返回目标 `NodeRef`;在目标上,`anchor` 返回锚点名。移除仍被别名引用的锚点会抛出 `AliasError`——请先移除别名。
+`alias()` 调用会在需要时为目标加锚点,并把该路径变成别名(`*base-values`)。目标可以是上面的值本身,也可以是路径(`target="base"`)。别名条目穿透读取到目标,因此经由别名做样式编辑作用在锚点目标上。移除仍被别名引用的锚点会抛出 `AliasError`——请先移除别名。
 
 ## 6. 文档级元数据
 
-指令与文档标记是文档的属性:
+指令与文档标记是文档的属性。容器根的文档本身就是根值,因此样式 API 对整个文档同样适用:
 
 ```python
 document.directives = ["%YAML 1.1"]
@@ -90,16 +93,16 @@ document.explicit_end = True
 
 ## 7. 原子的多字段编辑
 
-`NodeRef.update()` 一步完成多个经过校验的字段修改:
+`set()` 一步完成多个经过校验的字段修改:
 
 ```python
-document.node("version").update(
+document["version"].set(
     value="0.4.0",
     style="double",
     inline="# release version",
 )
 ```
 
-全部修改会先整体校验;任何一个字段无效,文档就会恢复原状,什么都不会应用。未知字段名抛出 `TypeError`,能抓住静默赋值放过的拼写错误。`update()` 返回同一个 `NodeRef`,因此可以链式调用。
+全部修改会先整体校验;任何一个字段无效,文档就会恢复原状,什么都不会应用。未知字段名抛出 `TypeError`,能抓住静默赋值放过的拼写错误。
 
-`Document`、`NodeRef` 等的完整成员列表见[参考文档](../api/documents.md)。下一章讨论加载内容不受信任的 YAML。
+`Document` 与值上 API 的完整成员列表见[参考文档](../api/documents.md)。下一章讨论加载内容不受信任的 YAML。

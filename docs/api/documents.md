@@ -1,9 +1,12 @@
 # Documents and style editing
 
 Every round-trip load returns a `Document` — a style-aware object that also
-behaves like the ordinary `dict`, `list`, or scalar it wraps. This page is the
-reference for that object model: the `Document` classes, the `NodeRef` style
-views, comment access, and multi-document streams.
+behaves like the ordinary `dict`, `list`, or scalar it wraps. Every value
+reachable through it is a round-trip wrapper (a `dict`/`list` subclass, or a
+subclass of the scalar's own type) that carries the styling API directly, so
+values are read, replaced, and styled through one protocol. This page is the
+reference for that object model: the `Document` classes, styling values,
+comment access, and multi-document streams.
 
 ## `Document`
 
@@ -28,14 +31,18 @@ constructed directly; use `Document.new()` to build one from Python data.
   have no source layout. Defaults to `DEFAULT_CONFIG`.
 
 `Document` also implements the container protocol of its root: `len()`,
-iteration, `document[key]` and `document[key] = value` (delegating to
-`at()`/`set()`), and, for mapping roots, `keys()`, `items()`, and `values()`
-— with `items()` and `values()` reading alias entries through to their
-target values. `str(document)` returns the wrapped scalar for scalar roots
-and the dumped YAML text for container roots, and `copy.deepcopy(document)`
-returns a fully independent copy (handle-backed documents are reloaded from
-their dumped text, keeping the byte-identical formatting). Scalar roots
-coerce through `str()`, `int()`, `float()`, `complex()`, and `bool()`.
+iteration, `document[key]`, `document.get(key)`, `document[key] = value`,
+`del document[key]`, and, for mapping roots, `keys()`, `items()`, and
+`values()` — with `items()` and `values()` reading alias entries through to
+their target values. Sequence roots expose the full `list` interface
+(`append()`, `insert()`, `pop()`, `remove()`, `sort()`, ...). Nested values
+are read and edited by chaining subscripts
+(`document["service"]["ports"][0]`). `str(document)` returns the wrapped
+scalar for scalar roots and the dumped YAML text for container roots, and
+`copy.deepcopy(document)` returns a fully independent copy (handle-backed
+documents are reloaded from their dumped text, keeping the byte-identical
+formatting). Scalar roots coerce through `str()`, `int()`, `float()`,
+`complex()`, and `bool()`.
 
 ### `Document.new(root=None, *, config=None)`
 
@@ -45,7 +52,10 @@ Classmethod returning a new `Document` wrapping *root*, which defaults to
 ### `Document.value`
 
 The document root value as a Python scalar or round-trip container.
-Assigning to `value` replaces the whole root.
+Assigning to `value` replaces the whole root. The root value itself carries
+the styling API: for container roots the document *is* the root container
+(`document.style = ...` works), and for scalar roots
+`document.value.style = ...` styles the wrapped scalar.
 
 ### `Document.data`
 
@@ -55,11 +65,6 @@ Alias entries created with `alias()` read through to the target's current
 value: when any alias is registered the returned mapping/sequence is a
 shallow resolved copy rather than the live container; without aliases the
 underlying data object is returned unchanged.
-
-### `Document.root`
-
-A `NodeRef` for the document root (`path == ()`), giving access to
-document-level comments, styles, tags, and anchors.
 
 ### `Document.source`
 
@@ -81,83 +86,59 @@ to override what the source had.
 Whether the document ends with an explicit `...` marker. Assign a `bool` to
 override what the source had.
 
-### `Document.at(*path)`
+### Reading and writing: the container protocol
 
-Return the value at *path*.
-
-- **\\*path** – one or more path parts: mapping keys or sequence indexes,
-  read from the outside in. A single tuple or list may be passed instead of
-  separate arguments.
-
+A document reads and writes like the `dict`, `list`, or scalar it wraps.
 Missing paths raise `PathError`. Alias nodes resolve to their target value:
 entries created with `alias()` read through to the target's current value,
 and aliases loaded from the source share the target's Python object.
 
 ```python
 >>> document = yaml.load("service:\n  ports: [8080, 8081]\n")
->>> document.at("service", "ports", 0)
+>>> document["service"]["ports"][0]
 8080
 ```
 
-### `Document.node(*path)`
+### `Document.get(key, default=None)`
 
-Return a `NodeRef` view for the node at *path*. Without arguments it returns
-the root node. Paths that do not exist raise `PathError`.
-
-### `Document.set(*path, value, style=None, collection_style=None, chomping=None, block_indent_indicator=None, tag=None, anchor=None, before=None, inline=None, after=None)`
-
-Set the node at *path* to *value*, optionally applying style metadata in the
-same atomic step. Missing intermediate mapping keys are created.
-
-- **\\*path** – path parts of the node to set.
-- **value** – the new Python value.
-- **style** – (`ScalarStyle | str | None`) scalar style: `plain`, `single`,
-  `double`, `literal`, or `folded`. String values are coerced.
-- **collection_style** – (`CollectionStyle | str | None`) `block` or `flow`.
-- **chomping** – (`Chomping | str | None`) `clip`, `strip`, or `keep`;
-  requires a literal or folded style.
-- **block_indent_indicator** – (`int | None`) explicit indentation indicator
-  for block scalars, `1` through `9`.
-- **tag** – (`str | None`) tag for the node; must start with `!`.
-- **anchor** – (`str | None`) anchor name; must not contain YAML indicator
-  characters.
-- **before**, **after** – (`str | Iterable[str] | None`) comment lines placed
-  before or after the entry. Every non-empty line must start with `#`.
-- **inline** – (`str | None`) a single-line comment placed after the value.
-
-All arguments are validated before anything is applied; an invalid
-combination raises `StyleError` and leaves the document unchanged. Returns
-the `NodeRef` for the written node.
+Return the value at *key*, or *default* when there is no node there. A
+tuple or list key is treated as a nested path: `document.get(("a", "b"))`
+reads `a.b`.
 
 ```python
->>> document = yaml.Document.new({})
->>> document.set("build", "command", value="python -m build", style="double")
-NodeRef(path=('build', 'command'))
+>>> document.get("service", {}).get("port", 8080)
+8080
 ```
 
-### `Document.append(*path, value, **style_options)`
+### `document[key] = value`
 
-Append *value* to the sequence at *path* and return the `NodeRef` of the new
-item. *path* must point to a `list`, otherwise `StyleError` is raised.
-*style_options* are the same style keywords as `Document.set()`.
+Assign the child *value* at *key*. The parent must exist (create nested
+levels by assigning intermediate containers first, exactly like a plain
+`dict`). Assigned scalars are wrapped and bound to the document, and plain
+`dict`/`list` values are converted to round-trip containers, so the assigned
+subtree immediately carries the styling API: `document["extra"] = "x"` and
+then `document["extra"].set(style="single")` just works. Assigning a value
+keeps any style already attached to the node; restyle it through the new
+value (see [Styling values](#styling-values)).
 
-### `Document.insert(*path, index, value, **style_options)`
+### `del document[key]`
 
-Insert *value* into the sequence at *path* before position *index*, shifting
-the rest, and return the `NodeRef` of the new item.
+Remove the child at *key* — a mapping key on mapping roots, an index on
+sequence roots (`del document[0]`). The node's subtree is removed together
+with its comments, styles, tags, and anchors. Raises `AliasError` when the
+node still has aliases pointing at it; removing an alias entry itself
+(unlinking `*name`) is allowed.
 
-- **index** – insertion position; existing items from that position on are
-  moved back.
+The same edits apply at any depth through the wrapped containers:
+`del document["items"][0]`, `document["items"].pop()`,
+`document["items"].insert(1, "x")`, `document["items"].append("x")`,
+`document["items"].reverse()`, and `document["items"].sort()` all follow
+normal `list` semantics. When items shift, the document automatically moves
+or drops the style/comment/tag/anchor overrides attached to the affected
+positions so they keep describing the same nodes.
 
-### `Document.remove(*path)`
-
-Remove the node at *path* and return its value.
-
-- **\\*path** – path parts of the node to remove; the root cannot be removed.
-
-Raises `PathError` for missing paths and `AliasError` when the node still
-has aliases pointing at it. Style overrides attached to the removed subtree
-are discarded.
+Metadata (styles, comments, tags, anchors) is managed through the values
+themselves — see [Styling values](#styling-values).
 
 ### `Document.alias(*path, target, anchor=None)`
 
@@ -166,19 +147,19 @@ current value becomes the alias) or be new — missing intermediate mapping
 keys are created, and the new entry holds the target's value as an alias.
 
 - **\\*path** – path parts of the node that should become the alias.
-- **target** – a `NodeRef` in the same document, or a path tuple pointing at
-  the anchor source. Aliasing across documents raises `AliasError`.
+- **target** – the value to alias — the wrapper read from this document
+  (`document["base"]`) — or a path (a tuple, or a single key) pointing at the
+  anchor source. Aliasing across documents raises `AliasError`.
 - **anchor** – (`str | None`) anchor name to attach to the target. When
   omitted and the target has no anchor, a free name (`id001`, `id002`, ...)
   is generated.
 
-Returns the `NodeRef` of the alias node; `is_alias` and `alias_target` are
-available on it. The anchor lives on the target node.
+Returns the alias entry's value (which reads through to the target). The
+anchor lives on the target node.
 
 ```python
 >>> document = yaml.load("default: 1\noverride: 2\n")
->>> document.alias("override", target=document.node("default"))
-NodeRef(path=('override',))
+>>> document.alias("override", target=document["default"])
 >>> document.dump()
 'default: &id001 1\noverride: *id001\n'
 ```
@@ -220,84 +201,91 @@ or scalar directly:
 
 ```python
 >>> document = yaml.load("'0.3.0'\n")
->>> document == "0.3.0", document.root.style
+>>> document == "0.3.0", document.value.style
 (True, <ScalarStyle.SINGLE: 'single'>)
 ```
 
-## `NodeRef`
+## Styling values
 
-A stable view over one node of a `Document`, returned by `Document.node()`,
-`Document.set()`, `Document.append()`, `Document.insert()`, and
-`Document.alias()`. The view is resolved by node identity, not by a frozen
-path: after list insertions or removals shift siblings around, accessing the
-ref still reaches the same node, and accessing a ref whose node was removed
-raises `PathError`. Nodes created in Python (without native node ids) fall
-back to the path the ref was created with. Property assignments validate the
-requested style against the node's value before mutating.
+Every value reachable through a document is a round-trip wrapper that carries
+the styling API, so there is no separate node handle:
 
-### `NodeRef.path`
+- mappings are `dict` subclasses (`RoundTripMap`); sequences are `list`
+  subclasses (`RoundTripList`);
+- loaded scalars are subclasses of their own type — `RoundTripStr`,
+  `RoundTripInt`, `RoundTripFloat`, `RoundTripBytes`, `RoundTripDecimal`,
+  and `RoundTripDatetime`/`RoundTripDate`/`RoundTripTime` for timestamps;
+- `bool` and `None` have no subclassable Python type and stay plain — they
+  are the only loaded scalars without this API.
 
-The `tuple` of path parts identifying the node — the node's *current* path,
+Wrappers compare and hash exactly like the plain values they wrap, so they
+work as `dict` keys, in `json.dumps`, and everywhere else a plain value would.
+The `safe_load`/`full_load` plain-data APIs never return wrappers.
+
+Paths are resolved by value identity at access time: a wrapper follows its
+own value through insertions and removals (read it, shift the list, and
+`value.path` still points at it), and styling a value that is no longer in
+the document raises `PathError`. Reading through an alias entry resolves to
+the anchor target, so styling through an alias styles the target. Property
+assignments validate the requested style against the node's value before
+mutating.
+
+### `value.path`
+
+The `tuple` of path parts identifying the node — its *current* path,
 re-resolved by identity on every access.
 
-### `NodeRef.value`
+### `value.value`
 
 The node's Python value. Assigning replaces the value; a style already
 attached to the node is validated against the new value first.
 
-### `NodeRef.span`
+### `value.span`
 
 A `SourceSpan` with the byte offsets and one-based line/column of the node
 in the original text, or `None` for nodes without source metadata.
 
-### `NodeRef.style`
+### `value.style`
 
 The scalar style (`ScalarStyle | None`): `plain`, `single`, `double`,
 `literal`, or `folded`. Assigning a style that does not fit the value raises
 `StyleError`.
 
-### `NodeRef.collection_style`
+### `value.collection_style`
 
 The collection style (`CollectionStyle | None`): `block` or `flow`. Only
 meaningful for mappings and sequences.
 
-### `NodeRef.chomping`
+### `value.chomping`
 
 The chomping indicator (`Chomping | None`): `clip`, `strip`, or `keep`.
 Only literal and folded scalars can carry it; assigning it to any other
 style raises `StyleError`. Assign `None` to clear the override.
 
-### `NodeRef.block_indent_indicator`
+### `value.block_indent_indicator`
 
 The explicit indentation indicator (`int | None`, `1`–`9`) for block
 scalars. Assign `None` to clear it.
 
-### `NodeRef.tag`
+### `value.tag`
 
 The node tag (`str | None`). Assigned values must start with `!`.
 
-### `NodeRef.anchor`
+### `value.anchor`
 
 The anchor name (`str | None`). Renaming an anchor rewrites the aliases
 that point at it; removing an anchor that still has aliases raises
 `AliasError`.
 
-### `NodeRef.is_alias`
-
-Whether the node is an alias (`*name`) of another node.
-
-### `NodeRef.alias_target`
-
-The `NodeRef` of the anchor this alias points at, or `None` when the node is
-not an alias.
-
-### `NodeRef.comments`
+### `value.comments`
 
 The `Comments` view for this node's entry.
 
-### `NodeRef.update(**values)`
+### `value.set(**values)`
 
-Apply several fields in one atomic step and return the same `NodeRef`.
+Apply several fields in one atomic step and return the value now stored at
+the node's path. The path is resolved once up front, so the fields stay
+pinned to the node even when `value` swaps the stored wrapper.
 
 - **\\*\\*values** – any of `value`, `style`, `collection_style`, `chomping`,
   `block_indent_indicator`, `tag`, `anchor`, `before`, `inline`, `after`,
@@ -309,14 +297,14 @@ with the document restored to its previous state, so the update never
 applies partially.
 
 ```python
->>> ref = document.node("message")
->>> ref.update(style="double", inline="# shown to users") is ref
-True
+>>> document["message"].set(style="double", inline="# shown to users")
+>>> document.dump()
+'message: "greeting"  # shown to users\n'
 ```
 
 ## `Comments`
 
-Accessed through `NodeRef.comments`. Comments are stored on the mapping
+Accessed through `value.comments`. Comments are stored on the mapping
 entry or sequence item that owns the node, so they survive value edits.
 
 ### `Comments.before`
@@ -335,7 +323,7 @@ Comment lines below the entry, before the next sibling (`list[str]`), with
 the same rules as `Comments.before`.
 
 ```python
->>> document.node("channel").comments.before = ["# Published channel"]
+>>> document["channel"].comments.before = ["# Published channel"]
 ```
 
 ## `DocumentStream`

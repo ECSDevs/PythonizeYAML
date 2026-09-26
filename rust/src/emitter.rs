@@ -516,12 +516,11 @@ fn datetime_key_text(value: &Bound<'_, PyAny>) -> Option<String> {
 }
 
 fn datetime_module_text(value: &Bound<'_, PyAny>, isoformat: bool) -> Option<String> {
-    let module = value.get_type().module().ok()?;
-    if module.to_string_lossy() != "datetime" {
-        return None;
-    }
-    let name = value.get_type().name().ok()?.to_string_lossy().into_owned();
-    if name != "datetime" && name != "date" {
+    // Accept subclasses too (the round-trip scalar wrappers): a datetime is
+    // also an instance of date, so the datetime check must come first.
+    let is_datetime = is_instance_of_module_class(value, "datetime", "datetime");
+    let is_date = !is_datetime && is_instance_of_module_class(value, "datetime", "date");
+    if !is_datetime && !is_date {
         return None;
     }
     let text = if isoformat {
@@ -538,6 +537,17 @@ fn datetime_module_text(value: &Bound<'_, PyAny>, isoformat: bool) -> Option<Str
     // Only emit unquoted when the parser reads the text back as a timestamp;
     // otherwise fall through to the ordinary (error/quoted) handling.
     parser::parse_timestamp(&text).map(|_| text)
+}
+
+/// Whether ``value`` is an instance of ``module.class`` (subclasses count).
+fn is_instance_of_module_class(value: &Bound<'_, PyAny>, module: &str, class: &str) -> bool {
+    let Ok(module_object) = value.py().import(module) else {
+        return false;
+    };
+    let Ok(class_object) = module_object.getattr(class) else {
+        return false;
+    };
+    value.is_instance(&class_object).unwrap_or(false)
 }
 
 fn quote_string(value: &str) -> String {
@@ -664,21 +674,13 @@ fn format_float(value: f64) -> String {
 }
 
 fn decimal_text(value: &Bound<'_, PyAny>) -> Option<String> {
-    let module = value
-        .get_type()
-        .module()
-        .ok()?
-        .to_string_lossy()
-        .into_owned();
-    let name = value.get_type().name().ok()?.to_string_lossy().into_owned();
-    if module == "decimal" && name == "Decimal" {
-        value
-            .str()
-            .ok()
-            .map(|value| value.to_string_lossy().into_owned())
-    } else {
-        None
+    if !is_instance_of_module_class(value, "decimal", "Decimal") {
+        return None;
     }
+    value
+        .str()
+        .ok()
+        .map(|value| value.to_string_lossy().into_owned())
 }
 
 fn is_tagged(value: &Bound<'_, PyAny>) -> bool {

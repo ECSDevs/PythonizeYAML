@@ -68,4 +68,4 @@ for document in documents:
 Path("environments.yaml").write_text(yaml.dump_all(documents), encoding="utf-8")
 ```
 
-`load_all()` 返回一个惰性生成器,逐个产出 `Document` 对象。每个文档都通过 `Document.node()` 把自己的注释、样式和文档标记暴露为一等属性;参见[文档与样式编辑](../api/documents.md)。
+`load_all()` 返回一个惰性生成器,逐个产出 `Document` 对象。每个文档中的值都把注释、样式和文档标记暴露为一等属性;参见[文档与样式编辑](../api/documents.md)。

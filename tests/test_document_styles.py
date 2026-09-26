@@ -53,7 +53,7 @@ def test_document_root_acts_like_its_python_value():
 
 def test_read_scalar_style_and_location():
     document = load_document("name: 'example'\n")
-    node = document.node("name")
+    node = document["name"]
     assert node.style is ScalarStyle.SINGLE
     assert node.value == "example"
     assert node.span is not None
@@ -62,17 +62,17 @@ def test_read_scalar_style_and_location():
 
 def test_edit_scalar_value_and_style_atomically():
     document = load_document("name: example\nport: 8080\n")
-    document.node("name").value = "renamed"
-    document.node("name").style = "double"
+    document["name"].value = "renamed"
+    document["name"].style = "double"
     assert document.dump() == 'name: "renamed"\nport: 8080\n'
     with pytest.raises(StyleError):
-        document.node("port").style = "literal"
-    assert document.node("port").value == 8080
+        document["port"].style = "literal"
+    assert document["port"].value == 8080
 
 
 def test_read_and_edit_positioned_comments():
     document = load_document("# before\nname: example  # inline\n# after\n")
-    node = document.node("name")
+    node = document["name"]
     assert node.comments.before == ["# before"]
     assert node.comments.inline == "# inline"
     assert node.comments.after == ["# after"]
@@ -84,34 +84,34 @@ def test_read_and_edit_positioned_comments():
 
 def test_edit_tags_anchors_and_aliases():
     document = load_document("base:\n  value: 1\ncopy:\n  value: 1\n")
-    document.node("base").anchor = "base"
-    document.node("base").tag = "!app/config"
+    document["base"].anchor = "base"
+    document["base"].tag = "!app/config"
     document.alias("copy", target=("base",))
     assert document.dump() == (
         "base: !app/config &base\n  value: 1\ncopy: *base\n"
     )
-    document.node("base").anchor = "renamed"
+    document["base"].anchor = "renamed"
     assert "copy: *renamed" in document.dump()
 
 
 def test_alias_removal_is_rejected_while_references_exist():
     document = load_document("base: &base 1\ncopy: *base\n")
     with pytest.raises(AliasError):
-        document.node("base").anchor = None
+        document["base"].anchor = None
 
 
 def test_flow_style_conversion_and_strict_validation():
     document = load_document("items:\n  - one\n  - two\n")
-    document.node("items").collection_style = "flow"
+    document["items"].collection_style = "flow"
     assert document.dump() == "items: [one, two]\n"
     with pytest.raises(StyleError):
-        document.node("items").style = "double"
+        document["items"].style = "double"
 
 
 def test_create_styled_document():
     document = Document.new({"message": "hello\nworld", "items": [1, 2]})
-    document.node("message").style = "literal"
-    document.node("items").collection_style = CollectionStyle.FLOW
+    document["message"].style = "literal"
+    document["items"].collection_style = CollectionStyle.FLOW
     assert document.dump() == "message: |\n    hello\n    world\nitems: [1, 2]\n"
 
 
@@ -139,23 +139,24 @@ def test_existing_dump_accepts_document_without_breaking_plain_data():
 
 def test_insert_styled_node_into_loaded_document_preserves_comments():
     document = load_document("# top\na: 1\n# end\n")
-    document.set("b", value="x", style="double", before=["# b"])
+    document["b"] = "x"
+    document["b"].set(style="double", before=["# b"])
     assert document.dump() == '# top\na: 1\n# b\nb: "x"\n# end\n'
 
 
 def test_update_is_atomic_when_style_is_incompatible():
     document = load_document("a: 1\n")
-    node = document.node("a")
+    node = document["a"]
     with pytest.raises(StyleError):
-        node.update(value=2, style="literal")
+        node.set(value=2, style="literal")
     assert node.value == 1
     assert node.style is ScalarStyle.PLAIN
 
 
 def test_document_stream_styles_changed_documents_without_duplication():
     stream = load_documents("---\na: x\n---\nb: y\n")
-    stream[0].node("a").style = "double"
-    stream[1].node("b").style = "single"
+    stream[0]["a"].style = "double"
+    stream[1]["b"].style = "single"
     assert stream.dump() == '---\na: "x"\n---\nb: \'y\'\n'
 
 
@@ -175,7 +176,7 @@ def test_new_document_dumps_block_sequences():
 
 def test_alias_removal_rejected_for_python_side_aliases():
     document = load_document("base: 1\ncopy: 2\n")
-    document.alias("copy", target=document.node("base"))
+    document.alias("copy", target=document["base"])
     with pytest.raises(AliasError):
-        document.node("base").anchor = None
+        document["base"].anchor = None
     assert document.dump() == "base: &id001 1\ncopy: *id001\n"

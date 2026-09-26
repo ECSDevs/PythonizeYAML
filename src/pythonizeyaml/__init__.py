@@ -46,7 +46,7 @@ from .api import (
     unsafe_load_all,
 )
 from .config import DEFAULT_CONFIG, IndentConfig
-from .document import Document, DocumentMapping, DocumentSequence, DocumentScalar, DocumentStream, NodeRef, Comments, load_document, load_documents, read_document, read_documents
+from .document import Document, DocumentMapping, DocumentSequence, DocumentScalar, DocumentStream, Comments, load_document, load_documents, read_document, read_documents
 from .styles import Chomping, CollectionStyle, ScalarStyle, SourceSpan
 from .engine import SafeYAML, YAML
 from .tagged import Tagged
@@ -65,7 +65,7 @@ from .errors import (
     YAMLError,
 )
 
-__version__ = "0.3.0"
+__version__ = "0.4.0"
 
 __all__ = [
     "__version__",
@@ -99,7 +99,6 @@ __all__ = [
     "DocumentSequence",
     "DocumentScalar",
     "DocumentStream",
-    "NodeRef",
     "Comments",
     "ScalarStyle",
     "CollectionStyle",

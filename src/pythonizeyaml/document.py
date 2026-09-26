@@ -32,9 +32,34 @@ from . import _native
 from .config import DEFAULT_CONFIG, IndentConfig
 from .errors import AliasError, PathError, StyleError, translate_native_error
 from .styles import Chomping, CollectionStyle, ScalarStyle, SourceSpan
-from .nodes import RoundTripList, RoundTripMap
+from .nodes import (
+    Comments,
+    RoundTripBytes,
+    RoundTripDate,
+    RoundTripDatetime,
+    RoundTripDecimal,
+    RoundTripFloat,
+    RoundTripInt,
+    RoundTripList,
+    RoundTripMap,
+    RoundTripStr,
+    RoundTripTime,
+    _ANCHOR_RE,
+    _RoundTripMixin,
+    prepare_value,
+    unwrap_scalar,
+)
 
-_ANCHOR_RE = re.compile(r"^[^\s\[\]{},*&!|>@`]+$")
+_SCALAR_WRAPPERS = (
+    RoundTripStr,
+    RoundTripInt,
+    RoundTripFloat,
+    RoundTripBytes,
+    RoundTripDecimal,
+    RoundTripDatetime,
+    RoundTripDate,
+    RoundTripTime,
+)
 
 
 def _path_tuple(path: tuple[Any, ...]) -> tuple[Any, ...]:
@@ -43,13 +68,30 @@ def _path_tuple(path: tuple[Any, ...]) -> tuple[Any, ...]:
     return tuple(path)
 
 
+def _raw_get(container: Any, key: Any) -> Any:
+    """Read one item from a container's raw storage.
+
+    Document instances store their data in themselves and override
+    ``__getitem__`` to resolve paths, so reads that are already walking a
+    resolved path must bypass the override to avoid re-entering it.
+    """
+    if isinstance(container, dict):
+        return dict.__getitem__(container, key)
+    if isinstance(container, list):
+        return list.__getitem__(container, key)
+    return container[key]
+
+
 def _plain_value(value: Any) -> Any:
     """Convert loaded document data into plain Python data.
 
-    Round-trip containers become plain ``dict``/``list`` values, scalar-root
-    documents unwrap to their value, and everything else (including inert
+    Round-trip containers become plain ``dict``/``list`` values, scalar
+    wrappers unwrap to their built-in type, scalar-root documents unwrap to
+    their value, and everything else (including inert
     :class:`~pythonizeyaml.tagged.Tagged` values) is passed through as is.
     """
+    if isinstance(value, _SCALAR_WRAPPERS):
+        return unwrap_scalar(value)
     if isinstance(value, dict):
         return {_plain_value(key): _plain_value(item) for key, item in value.items()}
     if isinstance(value, Document):
@@ -118,268 +160,6 @@ def _description_in_chars(raw: dict[str, Any], offsets: _OffsetMap) -> dict[str,
     return described
 
 
-class Comments:
-    """Positioned raw comments for one YAML node or entry."""
-
-    def __init__(self, node: "NodeRef") -> None:
-        self._node = node
-
-    @property
-    def before(self) -> list[str]:
-        return self._node._document._get_comments(self._node.path)["before"]
-
-    @before.setter
-    def before(self, value: str | Iterable[str] | None) -> None:
-        self._node._document._set_comment(self._node.path, "before", value)
-
-    @property
-    def inline(self) -> Optional[str]:
-        return self._node._document._get_comments(self._node.path)["inline"]
-
-    @inline.setter
-    def inline(self, value: Optional[str]) -> None:
-        self._node._document._set_comment(self._node.path, "inline", value)
-
-    @property
-    def after(self) -> list[str]:
-        return self._node._document._get_comments(self._node.path)["after"]
-
-    @after.setter
-    def after(self, value: str | Iterable[str] | None) -> None:
-        self._node._document._set_comment(self._node.path, "after", value)
-
-
-class NodeRef:
-    """A stable view over one node in a :class:`Document`.
-
-    The view is resolved by node identity, not by a frozen path: after list
-    insertions or removals shift siblings around, accessing the ref still
-    reaches the same node. Accessing a ref whose node was removed raises
-    :class:`PathError`. Documents without a native handle (and nodes that were
-    created in Python and therefore have no native node id) fall back to the
-    path the ref was created with.
-    """
-
-    def __init__(self, document: "Document", path: tuple[Any, ...]) -> None:
-        self._document = document
-        self._path = path
-        self._node_id: Optional[int] = None
-        if document._handle is not None:
-            try:
-                node_id = document._node_id_for_path(path)
-            except PathError:
-                node_id = -1
-            if node_id >= 0:
-                self._node_id = node_id
-
-    @property
-    def path(self) -> tuple[Any, ...]:
-        """The node's current path, resolved by identity when possible."""
-        if self._node_id is not None:
-            current = self._document._path_for_node_id(self._node_id)
-            if current is None:
-                raise PathError(
-                    f"the node previously at path {self._path!r} no longer exists"
-                )
-            return current
-        return self._path
-
-    @property
-    def span(self) -> Optional[SourceSpan]:
-        return self._document._span(self.path)
-
-    @property
-    def value(self) -> Any:
-        return self._document.at(*self.path)
-
-    @value.setter
-    def value(self, value: Any) -> None:
-        current_style = self.style
-        self._document._validate_value_style(value, current_style)
-        self._document._set_value(self.path, value)
-
-    @property
-    def style(self) -> Optional[ScalarStyle]:
-        path = self.path
-        override = self._document._styles.get(path)
-        if override is not None:
-            return override
-        description = self._document._describe(path)
-        value = description.get("style") if description else None
-        return ScalarStyle(value) if value else None
-
-    @style.setter
-    def style(self, value: ScalarStyle | str) -> None:
-        style = ScalarStyle(value)
-        self._document._validate_scalar_style(self.value, style)
-        self._document._styles[self.path] = style
-
-    @property
-    def collection_style(self) -> Optional[CollectionStyle]:
-        path = self.path
-        override = self._document._collection_styles.get(path)
-        if override is not None:
-            return override
-        description = self._document._describe(path)
-        value = description.get("collection_style") if description else None
-        return CollectionStyle(value) if value else None
-
-    @collection_style.setter
-    def collection_style(self, value: CollectionStyle | str) -> None:
-        style = CollectionStyle(value)
-        self._document._validate_collection_style(self.value, style)
-        self._document._collection_styles[self.path] = style
-
-    @property
-    def chomping(self) -> Optional[Chomping]:
-        path = self.path
-        override = self._document._chomping.get(path)
-        if override is not None:
-            return override
-        description = self._document._describe(path)
-        value = description.get("chomping") if description else None
-        return Chomping(value) if value else None
-
-    @chomping.setter
-    def chomping(self, value: Chomping | str | None) -> None:
-        chomping = Chomping(value) if value is not None else None
-        style = self.style
-        if chomping is not None and style not in {ScalarStyle.LITERAL, ScalarStyle.FOLDED}:
-            raise StyleError("chomping requires a literal or folded scalar")
-        path = self.path
-        if chomping is None:
-            self._document._chomping.pop(path, None)
-        else:
-            self._document._chomping[path] = chomping
-
-    @property
-    def block_indent_indicator(self) -> Optional[int]:
-        return self._document._block_indent.get(self.path)
-
-    @block_indent_indicator.setter
-    def block_indent_indicator(self, value: Optional[int]) -> None:
-        if value is None:
-            self._document._block_indent.pop(self.path, None)
-            return
-        if not 1 <= value <= 9:
-            raise StyleError("block indentation indicator must be between 1 and 9")
-        if self.style not in {ScalarStyle.LITERAL, ScalarStyle.FOLDED}:
-            raise StyleError("block indentation requires a literal or folded scalar")
-        self._document._block_indent[self.path] = value
-
-    @property
-    def tag(self) -> Optional[str]:
-        path = self.path
-        if path in self._document._tags:
-            return self._document._tags[path]
-        description = self._document._describe(path)
-        return (description.get("raw_tag") or description.get("tag")) if description else None
-
-    @tag.setter
-    def tag(self, value: Optional[str]) -> None:
-        if value is not None and not value.startswith("!"):
-            raise StyleError("YAML tags must start with '!'")
-        if value is None:
-            self._document._tags[self.path] = None
-        else:
-            self._document._tags[self.path] = value
-
-    @property
-    def anchor(self) -> Optional[str]:
-        path = self.path
-        if path in self._document._anchors:
-            return self._document._anchors[path]
-        description = self._document._describe(path)
-        return description.get("anchor") if description else None
-
-    @anchor.setter
-    def anchor(self, value: Optional[str]) -> None:
-        if value is not None and not _ANCHOR_RE.match(value):
-            raise StyleError(f"invalid YAML anchor name: {value!r}")
-        path = self.path
-        old = self.anchor
-        native_aliases = self._document._native_aliases_for_target(path)
-        if value is not None and old is not None and old != value:
-            for alias_path, alias_anchor in list(self._document._aliases.items()):
-                if alias_anchor == old:
-                    self._document._aliases[alias_path] = value
-            for alias_path in native_aliases:
-                self._document._aliases[alias_path] = value
-        if value is None and (
-            any(anchor == old for anchor in self._document._aliases.values())
-            or bool(native_aliases)
-        ):
-            raise AliasError("cannot remove an anchor that still has aliases")
-        self._document._anchors[path] = value
-
-    @property
-    def is_alias(self) -> bool:
-        path = self.path
-        if path in self._document._aliases:
-            return True
-        description = self._document._describe(path)
-        return bool(description and description.get("kind") == "alias")
-
-    @property
-    def alias_target(self) -> Optional["NodeRef"]:
-        path = self._document._target_path_for_alias(self.path)
-        return NodeRef(self._document, path) if path is not None else None
-
-    @property
-    def comments(self) -> Comments:
-        return Comments(self)
-
-    def update(self, **values: Any) -> "NodeRef":
-        allowed = {
-            "value",
-            "style",
-            "collection_style",
-            "chomping",
-            "block_indent_indicator",
-            "tag",
-            "anchor",
-            "before",
-            "inline",
-            "after",
-        }
-        unknown = set(values) - allowed
-        if unknown:
-            raise TypeError(f"unsupported node fields: {', '.join(sorted(unknown))}")
-        candidate = values.get("value", self.value)
-        if "style" in values:
-            self._document._validate_scalar_style(candidate, ScalarStyle(values["style"]))
-        if "collection_style" in values:
-            self._document._validate_collection_style(candidate, CollectionStyle(values["collection_style"]))
-        snapshot = self._document._snapshot()
-        try:
-            if "value" in values:
-                self.value = values["value"]
-            if "style" in values:
-                self.style = values["style"]
-            if "collection_style" in values:
-                self.collection_style = values["collection_style"]
-            if "chomping" in values:
-                self.chomping = values["chomping"]
-            if "block_indent_indicator" in values:
-                self.block_indent_indicator = values["block_indent_indicator"]
-            if "tag" in values:
-                self.tag = values["tag"]
-            if "anchor" in values:
-                self.anchor = values["anchor"]
-            if "before" in values:
-                self.comments.before = values["before"]
-            if "inline" in values:
-                self.comments.inline = values["inline"]
-            if "after" in values:
-                self.comments.after = values["after"]
-        except Exception:
-            self._document._restore(snapshot)
-            raise
-        return self
-
-    def __repr__(self) -> str:
-        return f"NodeRef(path={self._path!r})"
-
 class Document:
     """A mutable style-aware YAML document."""
 
@@ -410,6 +190,38 @@ class Document:
         self._explicit_start_override: Optional[bool] = None
         self._explicit_end_override: Optional[bool] = None
         self._root_replaced = False
+        self._prepare_tree()
+
+    def _prepare_tree(self) -> None:
+        """Bind every round-trip value in the data tree to this document.
+
+        Loaded documents arrive from the native engine with round-trip
+        containers and wrapped scalars; this walk binds them to ``self``.
+        Documents built from plain Python data are converted in place (plain
+        ``dict``/``list`` become round-trip containers, scalars are wrapped)
+        so every value the container protocol returns carries the styling API.
+        """
+        stack = [self._data]
+        while stack:
+            container = stack.pop()
+            if isinstance(container, _RoundTripMixin):
+                container._pyy_document = self
+            if isinstance(container, dict):
+                for key in dict.keys(container):
+                    child = dict.__getitem__(container, key)
+                    prepared = prepare_value(child, self)
+                    if prepared is not child:
+                        dict.__setitem__(container, key, prepared)
+                    if isinstance(prepared, (dict, list)):
+                        stack.append(prepared)
+            elif isinstance(container, list):
+                for index in range(list.__len__(container)):
+                    child = list.__getitem__(container, index)
+                    prepared = prepare_value(child, self)
+                    if prepared is not child:
+                        list.__setitem__(container, index, prepared)
+                    if isinstance(prepared, (dict, list)):
+                        stack.append(prepared)
 
     @classmethod
     def new(cls, root: Any = None, *, config: Optional[IndentConfig] = None) -> "Document":
@@ -435,10 +247,6 @@ class Document:
     @value.setter
     def value(self, value: Any) -> None:
         self._set_value((), value)
-
-    @property
-    def root(self) -> "NodeRef":
-        return NodeRef(self, ())
 
     @property
     def directives(self) -> list[str]:
@@ -486,25 +294,60 @@ class Document:
             return self._handle.source()
         return self._source
 
-    def __getitem__(self, path: Any) -> Any:
-        return self.at(*_path_tuple((path,)))
+    def __getitem__(self, key: Any) -> Any:
+        return self._at((key,))
 
-    def __setitem__(self, path: Any, value: Any) -> None:
-        self._set_value(_path_tuple((path,)), value)
+    def __setitem__(self, key: Any, value: Any) -> None:
+        self._set_value((key,), value)
 
-    def at(self, *path: Any) -> Any:
-        """Return a value at a nested path."""
-        normalized = _path_tuple(path)
-        if normalized in self._aliases:
-            target = self._target_path_for_alias(normalized)
+    def __delitem__(self, key: Any) -> None:
+        """Remove a root-level child of a plain-container root.
+
+        Container-root documents (``DocumentMapping``/``DocumentSequence``)
+        resolve deletion through their round-trip container hooks instead;
+        this covers documents created from plain Python data.
+        """
+        path = (key,)
+        self._check_removal_allowed(path)
+        parent = self._data
+        try:
+            del parent[key]
+        except (KeyError, IndexError, TypeError) as exc:
+            raise PathError(f"no YAML node at path {path!r}") from exc
+        self._discard_overrides(path)
+        if isinstance(parent, list) and isinstance(key, int) and not isinstance(key, bool):
+            position = key if key >= 0 else len(parent) + 1 + key
+            self._reindex_overrides_after_removal((), position)
+
+    def get(self, key: Any, default: Any = None) -> Any:
+        """Return the value at *key*, or *default* when there is no node.
+
+        A tuple or list key is treated as a nested path, matching the
+        convention of :meth:`node`: ``document.get(("a", "b"))`` reads
+        ``a.b``. Alias entries read through to their target's current value.
+        """
+        try:
+            return self._at(_path_tuple((key,)))
+        except PathError:
+            return default
+
+    def _at(self, path: tuple[Any, ...]) -> Any:
+        """Alias-resolved read at a path tuple."""
+        if path in self._aliases:
+            target = self._target_path_for_alias(path)
             if target is not None:
-                return self.at(*target)
+                return self._at(target)
         current = self._data
-        for part in normalized:
+        for part in path:
             try:
-                current = current[part]
+                current = _raw_get(current, part)
             except (KeyError, IndexError, TypeError) as exc:
-                raise PathError(f"no YAML node at path {normalized!r}") from exc
+                raise PathError(f"no YAML node at path {path!r}") from exc
+        if isinstance(current, _RoundTripMixin):
+            # Remember where the value was read from: styled access resolves
+            # by identity, and this lets an object stored at several paths
+            # (assigned to more than one key) resolve to the intended one.
+            current._pyy_path_hint = path
         return current
 
     def __iter__(self) -> Iterator[Any]:
@@ -613,14 +456,148 @@ class Document:
 
     def _resolve_entry(self, path: tuple[Any, ...], value: Any) -> Any:
         if path in self._aliases:
-            return self.at(*path)
+            return self._at(path)
         return value
 
-    def node(self, *path: Any) -> "NodeRef":
-        normalized = _path_tuple(path)
-        if normalized:
-            self.at(*normalized)
-        return NodeRef(self, normalized)
+    # -- value identity resolution ---------------------------------------------
+    #
+    # Styled access goes through the value itself (every value reachable via
+    # the container protocol is a round-trip wrapper), so paths are resolved
+    # by object identity: the value's last-read path is validated first, then
+    # a full scan runs. Alias occurrences are excluded — they share the
+    # target's object, so styling through an alias entry styles the anchor
+    # target.
+
+    def _require_path(self, value: Any) -> tuple[Any, ...]:
+        """The path ``value`` lives at, raising when it cannot be located."""
+        hint = getattr(value, "_pyy_path_hint", None)
+        if hint is not None and self._hint_matches(hint, value):
+            return hint
+        found = [
+            path
+            for path, candidate in self._iter_paths()
+            if candidate is value and path not in self._aliases
+        ]
+        if len(found) == 1:
+            path = found[0]
+            try:
+                value._pyy_path_hint = path
+            except AttributeError:
+                pass
+            return path
+        if not found:
+            raise PathError(
+                "this value is not in the document; it was removed, replaced, "
+                "or never attached"
+            )
+        raise PathError(
+            "this value is stored at several paths; read it via document[...] "
+            "at the intended location before styling it"
+        )
+
+    def _locate(self, value: Any) -> Optional[tuple[Any, ...]]:
+        """The path of ``value`` inside the document, or ``None``."""
+        try:
+            return self._require_path(value)
+        except PathError:
+            return None
+
+    def _hint_matches(self, path: tuple[Any, ...], value: Any) -> bool:
+        current = self._data
+        for part in path:
+            try:
+                current = _raw_get(current, part)
+            except (KeyError, IndexError, TypeError):
+                return False
+        return current is value
+
+    def _style_at(self, path: tuple[Any, ...]) -> Optional[ScalarStyle]:
+        override = self._styles.get(path)
+        if override is not None:
+            return override
+        description = self._describe(path)
+        value = description.get("style") if description else None
+        return ScalarStyle(value) if value else None
+
+    def _set_style_at(self, path: tuple[Any, ...], value: ScalarStyle | str) -> None:
+        style = ScalarStyle(value)
+        self._validate_scalar_style(self._at(path), style)
+        self._styles[path] = style
+
+    def _collection_style_at(self, path: tuple[Any, ...]) -> Optional[CollectionStyle]:
+        override = self._collection_styles.get(path)
+        if override is not None:
+            return override
+        description = self._describe(path)
+        value = description.get("collection_style") if description else None
+        return CollectionStyle(value) if value else None
+
+    def _set_collection_style_at(self, path: tuple[Any, ...], value: CollectionStyle | str) -> None:
+        style = CollectionStyle(value)
+        self._validate_collection_style(self._at(path), style)
+        self._collection_styles[path] = style
+
+    def _chomping_at(self, path: tuple[Any, ...]) -> Optional[Chomping]:
+        override = self._chomping.get(path)
+        if override is not None:
+            return override
+        description = self._describe(path)
+        value = description.get("chomping") if description else None
+        return Chomping(value) if value else None
+
+    def _set_chomping_at(self, path: tuple[Any, ...], value: Chomping | str | None) -> None:
+        chomping = Chomping(value) if value is not None else None
+        style = self._style_at(path)
+        if chomping is not None and style not in {ScalarStyle.LITERAL, ScalarStyle.FOLDED}:
+            raise StyleError("chomping requires a literal or folded scalar")
+        if chomping is None:
+            self._chomping.pop(path, None)
+        else:
+            self._chomping[path] = chomping
+
+    def _set_block_indent_at(self, path: tuple[Any, ...], value: Optional[int]) -> None:
+        if value is None:
+            self._block_indent.pop(path, None)
+            return
+        if not 1 <= value <= 9:
+            raise StyleError("block indentation indicator must be between 1 and 9")
+        if self._style_at(path) not in {ScalarStyle.LITERAL, ScalarStyle.FOLDED}:
+            raise StyleError("block indentation requires a literal or folded scalar")
+        self._block_indent[path] = value
+
+    def _tag_at(self, path: tuple[Any, ...]) -> Optional[str]:
+        if path in self._tags:
+            return self._tags[path]
+        description = self._describe(path)
+        return (description.get("raw_tag") or description.get("tag")) if description else None
+
+    def _set_tag_at(self, path: tuple[Any, ...], value: Optional[str]) -> None:
+        if value is not None and not value.startswith("!"):
+            raise StyleError("YAML tags must start with '!'")
+        self._tags[path] = value
+
+    def _anchor_at(self, path: tuple[Any, ...]) -> Optional[str]:
+        if path in self._anchors:
+            return self._anchors[path]
+        description = self._describe(path)
+        return description.get("anchor") if description else None
+
+    def _set_anchor_at(self, path: tuple[Any, ...], value: Optional[str]) -> None:
+        if value is not None and not _ANCHOR_RE.match(value):
+            raise StyleError(f"invalid YAML anchor name: {value!r}")
+        old = self._anchor_at(path)
+        native_aliases = self._native_aliases_for_target(path)
+        if value is not None and old is not None and old != value:
+            for alias_path, alias_anchor in list(self._aliases.items()):
+                if alias_anchor == old:
+                    self._aliases[alias_path] = value
+            for alias_path in native_aliases:
+                self._aliases[alias_path] = value
+        if value is None and (
+            any(anchor == old for anchor in self._aliases.values()) or bool(native_aliases)
+        ):
+            raise AliasError("cannot remove an anchor that still has aliases")
+        self._anchors[path] = value
 
     def _describe(self, path: tuple[Any, ...]) -> Optional[dict[str, Any]]:
         node_id = self._node_id_for_path(path)
@@ -644,7 +621,7 @@ class Document:
                 pair = metadata.get(part)
                 node_id = int(pair[1]) if pair is not None else -1
                 try:
-                    current = current[part]
+                    current = _raw_get(current, part)
                 except KeyError as exc:
                     raise PathError(f"no YAML node at path {path!r}") from exc
             elif isinstance(current, list):
@@ -659,210 +636,99 @@ class Document:
                 raise PathError(f"no YAML node at path {path!r}")
         return node_id
 
-    def set(
-        self,
-        *path: Any,
-        value: Any,
-        style: ScalarStyle | str | None = None,
-        collection_style: CollectionStyle | str | None = None,
-        chomping: Chomping | str | None = None,
-        block_indent_indicator: int | None = None,
-        tag: str | None = None,
-        anchor: str | None = None,
-        before: str | Iterable[str] | None = None,
-        inline: str | None = None,
-        after: str | Iterable[str] | None = None,
-    ) -> "NodeRef":
-        normalized = _path_tuple(path)
-        # Validate everything up front so a rejected mutation never touches
-        # the document; the snapshot below is the safety net for anything the
-        # up-front checks cannot see.
-        self._validate_mutation_options(
-            value,
-            {
-                "style": style,
-                "collection_style": collection_style,
-                "chomping": chomping,
-                "block_indent_indicator": block_indent_indicator,
-                "tag": tag,
-                "anchor": anchor,
-                "before": before,
-                "inline": inline,
-                "after": after,
-            },
-        )
-        self._validate_mutation_path(normalized, create=True)
-        snapshot = self._snapshot()
-        try:
-            self._set_value(normalized, value, create=True)
-            node = NodeRef(self, normalized)
-            if style is not None:
-                node.style = style
-            if collection_style is not None:
-                node.collection_style = collection_style
-            if chomping is not None:
-                node.chomping = chomping
-            if block_indent_indicator is not None:
-                node.block_indent_indicator = block_indent_indicator
-            if tag is not None:
-                node.tag = tag
-            if anchor is not None:
-                node.anchor = anchor
-            if before is not None:
-                node.comments.before = before
-            if inline is not None:
-                node.comments.inline = inline
-            if after is not None:
-                node.comments.after = after
-        except Exception:
-            self._restore(snapshot)
-            raise
-        return NodeRef(self, normalized)
-
-    def _validate_mutation_options(self, value: Any, options: dict[str, Any]) -> None:
-        """Validate style/comment/tag options without touching the document."""
-        style = options.get("style")
-        collection_style = options.get("collection_style")
-        chomping = options.get("chomping")
-        block_indent_indicator = options.get("block_indent_indicator")
-        tag = options.get("tag")
-        anchor = options.get("anchor")
-        before = options.get("before")
-        inline = options.get("inline")
-        after = options.get("after")
-        scalar_style = ScalarStyle(style) if style is not None else None
-        collection_style_value = CollectionStyle(collection_style) if collection_style is not None else None
-        if scalar_style is not None:
-            self._validate_scalar_style(value, scalar_style)
-        if collection_style_value is not None:
-            self._validate_collection_style(value, collection_style_value)
-        if chomping is not None:
-            effective = scalar_style or (_default_scalar_style(value) if isinstance(value, str) else None)
-            if effective not in {ScalarStyle.LITERAL, ScalarStyle.FOLDED}:
-                raise StyleError("chomping requires a literal or folded scalar")
-        if block_indent_indicator is not None and not 1 <= block_indent_indicator <= 9:
-            raise StyleError("block indentation indicator must be between 1 and 9")
-        if inline is not None:
-            if "\n" in inline:
-                raise StyleError("inline comments must be a single line")
-            if not inline.startswith("#"):
-                raise StyleError("comments must include the leading '#'")
-        if before is not None:
-            _normalize_comment_lines(before)
-        if after is not None:
-            _normalize_comment_lines(after)
-        if tag is not None and not tag.startswith("!"):
-            raise StyleError("YAML tags must start with an exclamation mark")
-        if anchor is not None and not _ANCHOR_RE.match(anchor):
-            raise StyleError(f"invalid YAML anchor name: {anchor!r}")
-
-    def _validate_mutation_path(self, path: tuple[Any, ...], *, create: bool) -> None:
-        """Check that ``_set_value`` would accept ``path`` without mutating."""
+    def _check_removal_allowed(self, path: tuple[Any, ...]) -> None:
+        """Raise when the node at ``path`` still has aliases pointing at it."""
         if not path:
-            return
-        current = self._data
-        if current is None:
-            if create and isinstance(path[0], str):
-                return
-            raise PathError(f"no YAML node at path {path!r}") from None
-        for index, part in enumerate(path[:-1]):
-            if isinstance(current, dict):
-                try:
-                    if part in current:
-                        current = current[part]
-                        continue
-                except TypeError:
-                    raise PathError(f"no YAML node at path {path!r}") from None
-                if not create or not isinstance(part, str):
-                    raise PathError(f"no YAML node at path {path!r}") from None
-                next_part = path[index + 1]
-                current = {} if isinstance(next_part, str) else []
-                continue
-            if isinstance(current, list):
-                try:
-                    current = current[int(part)]
-                except (ValueError, IndexError, TypeError):
-                    raise PathError(f"no YAML node at path {path!r}") from None
-                continue
-            raise PathError(f"cannot create mapping below path {path[: index + 1]!r}")
-        key = path[-1]
-        if isinstance(current, dict):
-            return
-        if isinstance(current, list):
-            try:
-                current[int(key)]
-            except (ValueError, IndexError, TypeError) as exc:
-                raise PathError(f"no sequence item at path {path!r}") from exc
-            return
-        raise PathError(f"cannot assign below scalar node at path {path[:-1]!r}")
-
-    def append(
-        self,
-        *path: Any,
-        value: Any,
-        **style_options: Any,
-    ) -> "NodeRef":
-        normalized = _path_tuple(path)
-        sequence = self.at(*normalized)
-        if not isinstance(sequence, list):
-            raise StyleError("append requires a sequence path")
-        self._validate_mutation_options(value, style_options)
-        snapshot = self._snapshot()
-        try:
-            sequence.append(value)
-            return self.set(*normalized, len(sequence) - 1, value=self.at(*normalized, len(sequence) - 1), **style_options)
-        except Exception:
-            self._restore(snapshot)
-            raise
-
-    def insert(
-        self,
-        *path: Any,
-        index: int,
-        value: Any,
-        **style_options: Any,
-    ) -> "NodeRef":
-        normalized = _path_tuple(path)
-        sequence = self.at(*normalized)
-        if not isinstance(sequence, list):
-            raise StyleError("insert requires a sequence path")
-        if not isinstance(index, int):
-            raise PathError(
-                f"sequence index must be an integer, got {type(index).__name__}"
-            )
-        if not -len(sequence) <= index <= len(sequence):
-            raise PathError(
-                f"sequence index {index} is out of range for path {normalized!r} "
-                f"with {len(sequence)} items"
-            )
-        position = index if index >= 0 else len(sequence) + index
-        self._validate_mutation_options(value, style_options)
-        snapshot = self._snapshot()
-        try:
-            sequence.insert(index, value)
-            return self.set(*normalized, position, value=sequence[position], **style_options)
-        except Exception:
-            self._restore(snapshot)
-            raise
-
-    def remove(self, *path: Any) -> Any:
-        normalized = _path_tuple(path)
-        if not normalized:
             raise PathError("cannot remove the document root")
-        node_id = self._node_id_for_path(normalized)
+        try:
+            node_id = self._node_id_for_path(path)
+        except PathError:
+            node_id = -1
         if self._has_aliases_to(node_id):
             raise AliasError("cannot remove a node that still has aliases")
-        parent = self.at(*normalized[:-1])
-        key = normalized[-1]
-        try:
-            value = parent[key]
-            del parent[key]
-        except (KeyError, IndexError, TypeError) as exc:
-            raise PathError(f"no YAML node at path {normalized!r}") from exc
-        self._discard_overrides(normalized)
-        if isinstance(parent, list):
-            self._reindex_overrides_after_removal(normalized[:-1], int(key))
-        return value
+
+    # -- round-trip container hooks ---------------------------------------------
+    #
+    # Containers notify their document before and after structural edits (see
+    # _RoundTripMixin) so the path-keyed override registries keep describing
+    # the right nodes.
+
+    def _pre_child_removed(self, container: Any, key: Any) -> None:
+        prefix = self._locate(container)
+        if prefix is not None:
+            self._check_removal_allowed(prefix + (key,))
+
+    def _post_child_removed(self, container: Any, key: Any) -> None:
+        prefix = self._locate(container)
+        if prefix is None:
+            return
+        if isinstance(container, list) and isinstance(key, int) and not isinstance(key, bool):
+            position = key if key >= 0 else len(container) + 1 + key
+            self._reindex_overrides_after_removal(prefix, position)
+        elif isinstance(key, slice):
+            self._discard_below(prefix)
+        else:
+            self._discard_overrides(prefix + (key,))
+
+    def _post_child_inserted(self, container: Any, index: Any) -> None:
+        prefix = self._locate(container)
+        if prefix is None:
+            return
+        if isinstance(index, int) and not isinstance(index, bool):
+            position = max(0, index if index >= 0 else len(container) - 1 + index)
+            self._reindex_overrides_after_insert(prefix, position)
+
+    def _post_children_reset(self, container: Any) -> None:
+        prefix = self._locate(container)
+        if prefix is not None:
+            self._discard_below(prefix)
+
+    def _reindex_overrides_after_insert(self, parent_path: tuple[Any, ...], index: int) -> None:
+        """Shift sibling override entries at or after an inserted list position."""
+        for mapping in (
+            self._styles,
+            self._collection_styles,
+            self._chomping,
+            self._block_indent,
+            self._tags,
+            self._anchors,
+            self._comments,
+            self._aliases,
+        ):
+            shifted: list[tuple[tuple[Any, ...], Any]] = []
+            for key in list(mapping):
+                if len(key) <= len(parent_path) or key[: len(parent_path)] != parent_path:
+                    continue
+                sibling = key[len(parent_path)]
+                if not isinstance(sibling, int) or isinstance(sibling, bool):
+                    continue
+                if sibling >= index:
+                    shifted.append((key, mapping.pop(key)))
+            for key, value in shifted:
+                position = key[len(parent_path)]
+                new_key = key[:len(parent_path)] + (position + 1,) + key[len(parent_path) + 1 :]
+                mapping[new_key] = value
+
+    def _discard_below(self, prefix: tuple[Any, ...]) -> None:
+        """Drop every override strictly below ``prefix``.
+
+        Used when a container's item order changes wholesale (sort, reverse,
+        clear): the container keeps its own overrides, but nothing below it
+        describes a stable node anymore.
+        """
+        for mapping in (
+            self._styles,
+            self._collection_styles,
+            self._chomping,
+            self._block_indent,
+            self._tags,
+            self._anchors,
+            self._comments,
+            self._aliases,
+        ):
+            for key in list(mapping):
+                if len(key) > len(prefix) and key[: len(prefix)] == prefix:
+                    mapping.pop(key, None)
 
     def _reindex_overrides_after_removal(
         self,
@@ -904,45 +770,59 @@ class Document:
     def alias(
         self,
         *path: Any,
-        target: "NodeRef | tuple[Any, ...]",
+        target: Any,
         anchor: str | None = None,
-    ) -> "NodeRef":
+    ) -> Any:
+        """Point ``path`` at the value of another node through an alias.
+
+        ``target`` is the value to alias — the wrapper read from the document
+        (``document.alias("copy", target=document["base"])``) — or a path
+        tuple pointing at it. When the target has no anchor yet one is
+        created (or taken from *anchor*).
+        """
         normalized = _path_tuple(path)
-        target_node = target if isinstance(target, NodeRef) else self.node(*target)
-        if target_node._document is not self:
-            raise AliasError("alias target belongs to a different document")
-        anchor_name = target_node.anchor
+        if isinstance(target, _RoundTripMixin):
+            if target._pyy_document is not self:
+                raise AliasError("alias target belongs to a different document")
+            target_path = target._pyy_path()
+        elif isinstance(target, (tuple, list)):
+            target_path = tuple(target)
+        else:
+            target_path = (target,)
+        target_value = self._at(target_path)
+        anchor_name = self._anchor_at(target_path)
         if anchor_name is None:
             anchor_name = anchor or self._unique_anchor()
-            target_node.anchor = anchor_name
+            self._set_anchor_at(target_path, anchor_name)
         elif anchor is not None and anchor != anchor_name:
-            target_node.anchor = anchor
+            self._set_anchor_at(target_path, anchor)
             anchor_name = anchor
         # Resolve existence against the real data tree *before* registering the
         # alias: the alias registry must not influence the existence check.
         existed = self._path_exists(normalized)
         self._aliases[normalized] = anchor_name
         if not existed:
-            self._set_value(normalized, target_node.value, create=True)
-        return NodeRef(self, normalized)
+            self._set_value(normalized, target_value, create=True)
+        return self._at(normalized)
 
     def _set_value(self, path: tuple[Any, ...], value: Any, *, create: bool = False) -> None:
         if not path:
             self._replace_root(value)
             return
         if self._data is None:
-            self._data = {}
+            self._data = RoundTripMap()
+            self._data._pyy_document = self
         current = self._data
         for index, part in enumerate(path[:-1]):
             try:
-                current = current[part]
+                current = _raw_get(current, part)
             except (KeyError, IndexError, TypeError):
                 if not create or not isinstance(part, str):
                     raise PathError(f"no YAML node at path {path!r}") from None
                 next_part = path[index + 1]
                 if not isinstance(current, dict):
                     raise PathError(f"cannot create mapping below path {path[: index + 1]!r}")
-                current[part] = {} if isinstance(next_part, str) else []
+                current[part] = RoundTripMap() if isinstance(next_part, str) else RoundTripList()
                 current = current[part]
         key = path[-1]
         if isinstance(current, dict):
@@ -972,7 +852,8 @@ class Document:
             for item in value:
                 self.append(item)
         else:
-            self._data = value
+            self._data = prepare_value(value, self)
+        self._prepare_tree()
         self._root_replaced = True
 
     def _path_exists(self, path: tuple[Any, ...]) -> bool:
@@ -980,7 +861,7 @@ class Document:
         current = self._data
         for part in path:
             try:
-                current = current[part]
+                current = _raw_get(current, part)
             except (KeyError, IndexError, TypeError):
                 return False
         return True
@@ -1156,14 +1037,16 @@ class Document:
             return None
         if parent_description.get("collection_style") == "flow":
             return None
-        parent = self.at(*parent_path) if parent_path else self.data
+        parent = self._at(parent_path) if parent_path else self.data
         if not isinstance(parent, dict) or path[-1] not in parent:
             return None
         parent_indent = 0
         if parent_path:
             parent_indent = _base_indent(self.source, int(parent_description["span"][0]))
         key = path[-1]
-        rendered = _render_node(self, path, parent[key], config, parent_indent)
+        # A block value is rendered at its own indent (one level below the
+        # key's line), matching what _render_mapping/_emit_new produce.
+        rendered = _render_node(self, path, parent[key], config, parent_indent + config.mapping)
         comments = self._get_comments(path)
         before_lines = list(comments.get("before", []))
         after_lines = list(comments.get("after", []))
@@ -1194,6 +1077,164 @@ class Document:
         else:
             position = self.source.rfind("\n", 0, int(parent_description["span"][0])) + 1
         return position, position, entry + "\n"
+
+    def _new_sequence_item_patch(
+        self,
+        path: tuple[Any, ...],
+        config: IndentConfig,
+    ) -> Optional[tuple[int, int, str]]:
+        """Patch inserting a Python-created item into a block sequence.
+
+        The native patcher skips Python-created items when external patches
+        are present (their whole-container rewrite would overlap and be
+        dropped), so insertions are rendered and positioned here instead —
+        after the nearest preceding item that exists in the source, or at the
+        sequence's first item line.
+        """
+        if not path:
+            return None
+        parent_path = path[:-1]
+        parent_description = self._describe(parent_path)
+        if parent_description is None or parent_description.get("kind") != "sequence":
+            return None
+        if parent_description.get("collection_style") == "flow":
+            return None
+        parent = self._at(parent_path)
+        if not isinstance(parent, list):
+            return None
+        index = path[-1]
+        if not isinstance(index, int) or isinstance(index, bool) or not 0 <= index < len(parent):
+            return None
+        child = parent[index]
+        dash_indent = self._sequence_dash_indent(parent_path, index)
+        if dash_indent is None:
+            return None
+        child_indent = dash_indent - config.offset + config.sequence
+        rendered = _render_node(self, path, child, config, child_indent)
+        comments = self._get_comments(path)
+        before_lines = list(comments.get("before", []))
+        after_lines = list(comments.get("after", []))
+        rendered_lines = rendered.split("\n")
+        if before_lines:
+            rendered_lines = rendered_lines[len(before_lines) :]
+        if after_lines:
+            rendered_lines = rendered_lines[: -len(after_lines)]
+        rendered = "\n".join(rendered_lines)
+        if _rendered_is_inline(self, path, child, rendered):
+            entry_line = " " * dash_indent + f"- {rendered}"
+        else:
+            indented = _shift_after_first_line(rendered, 0)
+            entry_line = " " * dash_indent + "-\n" + indented
+        entry_lines = before_lines + [entry_line] + after_lines
+        entry = "\n".join(entry_lines)
+        position = self._sequence_insertion_position(parent_path, parent_description, index)
+        if position is None:
+            return None
+        return position, position, entry + "\n"
+
+    def _sequence_dash_indent(
+        self,
+        parent_path: tuple[Any, ...],
+        index: int,
+    ) -> Optional[int]:
+        """Column of the dashes introducing the parent sequence's items.
+
+        Derived from an existing sibling item: the item's introducing dash is
+        the last ``-`` before its value on the value's line. Returns ``None``
+        when the sibling's dash does not start its own line (a sequence that
+        is itself an item shares its first line with the outer dash), which
+        cannot host a line-boundary insertion and falls back to a re-emit.
+        """
+        while index > 0:
+            previous_description = self._describe(parent_path + (index - 1,))
+            if previous_description is not None:
+                return self._item_dash_column(previous_description["span"][0])
+            # The previous item is itself a Python-created insertion.
+            index -= 1
+        first_description = self._describe(parent_path + (0,))
+        if first_description is None:
+            return None
+        column = self._item_dash_column(first_description["span"][0])
+        if column is None:
+            return None
+        line_start = self.source.rfind("\n", 0, int(first_description["span"][0])) + 1
+        if self.source[line_start:int(first_description["span"][0])].strip():
+            # The first item shares its line with the outer dash.
+            return None
+        return column
+
+    def _item_dash_column(self, value_start: int) -> Optional[int]:
+        line_start = self.source.rfind("\n", 0, int(value_start)) + 1
+        dash = self.source.rfind("-", line_start, int(value_start))
+        if dash < 0:
+            return None
+        return dash - line_start
+
+    def _sequence_insertion_position(
+        self,
+        parent_path: tuple[Any, ...],
+        parent_description: dict[str, Any],
+        index: int,
+    ) -> Optional[int]:
+        while index > 0:
+            previous_description = self._describe(parent_path + (index - 1,))
+            if previous_description is not None:
+                position = int(previous_description["span"][1])
+                current_line_start = self.source.rfind("\n", 0, position) + 1
+                if position > current_line_start:
+                    line_end = self.source.find("\n", position)
+                    position = len(self.source) if line_end < 0 else line_end + 1
+                return position
+            # The previous item is itself a Python-created insertion; keep
+            # walking back so consecutive appends chain onto one position.
+            index -= 1
+        return self.source.rfind("\n", 0, int(parent_description["span"][0])) + 1
+
+    def _new_node_insertion_patch(
+        self,
+        path: tuple[Any, ...],
+        config: IndentConfig,
+    ) -> Optional[tuple[int, int, str]]:
+        return self._new_node_patch(path, config) or self._new_sequence_item_patch(path, config)
+
+    def _iter_addition_paths(self) -> Iterator[tuple[Any, ...]]:
+        """Yield the top-most paths of Python-created nodes.
+
+        A child whose native node id is missing (``-1``) exists only in the
+        data, so when external patches are present it must be re-inserted
+        through an explicit patch; the walk stops at additions because a
+        patch renders the whole added subtree.
+        """
+        stack = [((), self._data)]
+        while stack:
+            path, value = stack.pop()
+            if isinstance(value, dict):
+                entry_nodes = getattr(value, "_pyy_entry_nodes", None)
+                if entry_nodes is None:
+                    # A plain (user-assigned) container carries no node ids;
+                    # the native patcher owns its content via per-value edits
+                    # or a whole-container rewrite.
+                    continue
+                for key, child in dict.items(value):
+                    if key == "<<":
+                        continue
+                    pair = entry_nodes.get(key)
+                    child_id = int(pair[1]) if pair is not None else -1
+                    if child_id < 0:
+                        yield path + (key,)
+                    else:
+                        stack.append((path + (key,), child))
+            elif isinstance(value, list):
+                node_ids = getattr(value, "_pyy_node_ids", None)
+                if node_ids is None:
+                    continue
+                for index, child in enumerate(value):
+                    child_id = int(node_ids[index]) if index < len(node_ids) else -1
+                    if child_id < 0:
+                        yield path + (index,)
+                    else:
+                        stack.append((path + (index,), child))
+
     def _inline_patch_range(
         self,
         path: tuple[Any, ...],
@@ -1370,10 +1411,32 @@ class Document:
                 | set(self._aliases)
             )
             unsupported_new_paths = any(
-                self._describe(path) is None and self._new_node_patch(path, selected) is None
+                self._describe(path) is None
+                and self._new_node_insertion_patch(path, selected) is None
                 for path in override_paths
             )
-            needs_new_emitter = self._handle is None or unsupported_new_paths
+            additions_unpatchable = False
+            if patches and not unsupported_new_paths:
+                # With external patches the native patcher skips Python-created
+                # items instead of rewriting their containers, so every addition
+                # needs an explicit insertion patch here. Deeper insertions come
+                # first: at a shared position an inner item must land inside the
+                # outer item's block.
+                addition_patches = []
+                for path in self._iter_addition_paths():
+                    if path in override_paths:
+                        continue
+                    patch = self._new_node_insertion_patch(path, selected)
+                    if patch is None:
+                        additions_unpatchable = True
+                        break
+                    addition_patches.append((len(path), patch))
+                if not additions_unpatchable:
+                    addition_patches.sort(key=lambda item: (item[1][0], -item[0]))
+                    patches.extend(patch for _, patch in addition_patches)
+            needs_new_emitter = (
+                self._handle is None or unsupported_new_paths or additions_unpatchable
+            )
             if needs_new_emitter:
                 text = self._emit_new(selected, start=start, end=end)
             else:
@@ -1418,14 +1481,14 @@ class Document:
         )
         for path in override_paths:
             if self._describe(path) is None:
-                patch = self._new_node_patch(path, config)
+                patch = self._new_node_insertion_patch(path, config)
                 if patch is not None:
                     patches.append(patch)
         for path, style in self._styles.items():
             description = self._describe(path)
             if description is None:
                 continue
-            value = self.at(*path)
+            value = self._at(path)
             chomping = self._chomping.get(path)
             indent = self._block_indent.get(path)
             replacement = _render_scalar(value, style, chomping=chomping, block_indent=indent)
@@ -1435,7 +1498,7 @@ class Document:
             description = self._describe(path)
             if description is None:
                 continue
-            value = self.at(*path)
+            value = self._at(path)
             replacement = _render_document_node(self, path, config)
             start, end = self._inline_patch_range(path, description)
             patches.append((start, end, " " + replacement))
@@ -1445,10 +1508,10 @@ class Document:
             description = self._describe(path)
             if description is None:
                 continue
-            style = NodeRef(self, path).style
+            style = self._style_at(path)
             if style is None:
                 continue
-            value = self.at(*path)
+            value = self._at(path)
             replacement = _render_scalar(
                 value,
                 style,
@@ -1570,7 +1633,7 @@ class Document:
     def _next_sibling_start(self, path: tuple[Any, ...]) -> Optional[int]:
         if not path:
             return None
-        parent = self.at(*path[:-1])
+        parent = self._at(path[:-1])
         key = path[-1]
         if isinstance(parent, dict):
             keys = list(parent)
@@ -1617,8 +1680,16 @@ class DocumentMapping(RoundTripMap, Document):
         Document.__init__(self, self, **kwargs)
         self._data = self
 
-    # dict.items/dict.values shadow the resolved Document views in the MRO;
-    # re-expose them so alias entries read through to their targets.
+    # dict.__getitem__/dict.get/dict.items/dict.values shadow the resolved
+    # Document views in the MRO; re-expose them so reads go through the
+    # document (alias entries read through to their targets) instead of the
+    # raw storage.
+    def __getitem__(self, key: Any) -> Any:
+        return Document.__getitem__(self, key)
+
+    def get(self, key: Any, default: Any = None) -> Any:
+        return Document.get(self, key, default)
+
     def items(self):
         return Document.items(self)
 
@@ -1642,6 +1713,10 @@ class DocumentSequence(RoundTripList, Document):
                 setattr(self, name, getattr(data, name))
         Document.__init__(self, self, **kwargs)
         self._data = self
+
+    # list.__getitem__ shadows the alias-resolving Document read in the MRO.
+    def __getitem__(self, key: Any) -> Any:
+        return Document.__getitem__(self, key)
 
     def __bool__(self) -> bool:
         return list.__len__(self) != 0
@@ -1850,7 +1925,7 @@ def _comments_from_source(
 
 
 def _render_document_node(document: Document, path: tuple[Any, ...], config: IndentConfig) -> str:
-    return _render_node(document, path, document.at(*path), config, 0)
+    return _render_node(document, path, document._at(path), config, 0)
 
 
 def _render_node(
@@ -1859,6 +1934,7 @@ def _render_node(
     value: Any,
     config: IndentConfig,
     indent: int,
+    flow: bool = False,
 ) -> str:
     pad = " " * indent
     comments = document._get_comments(path)
@@ -1866,11 +1942,11 @@ def _render_node(
     if path in document._aliases:
         core = f"*{document._aliases[path]}"
     elif isinstance(value, dict):
-        flow = document._collection_styles.get(path) is CollectionStyle.FLOW
-        core = _render_mapping(document, path, value, config, indent, flow)
+        node_flow = flow or document._collection_styles.get(path) is CollectionStyle.FLOW
+        core = _render_mapping(document, path, value, config, indent, node_flow)
     elif isinstance(value, list):
-        flow = document._collection_styles.get(path) is CollectionStyle.FLOW
-        core = _render_sequence(document, path, value, config, indent, flow)
+        node_flow = flow or document._collection_styles.get(path) is CollectionStyle.FLOW
+        core = _render_sequence(document, path, value, config, indent, node_flow)
     else:
         style = document._styles.get(path) or _default_scalar_style(value)
         core = _render_scalar(
@@ -1928,7 +2004,7 @@ def _render_mapping(
             child_path = path + (key,)
             entries.append(
                 f"{_render_scalar(key, ScalarStyle.PLAIN)}: "
-                f"{_render_node(document, child_path, child, config, 0)}"
+                f"{_render_node(document, child_path, child, config, 0, flow=True)}"
             )
         return "{" + ", ".join(entries) + "}"
     if not value:
@@ -1958,7 +2034,7 @@ def _render_sequence(
     if flow:
         items = []
         for index, child in enumerate(value):
-            items.append(_render_node(document, path + (index,), child, config, 0))
+            items.append(_render_node(document, path + (index,), child, config, 0, flow=True))
         return "[" + ", ".join(items) + "]"
     if not value:
         return "[]"

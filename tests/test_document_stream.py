@@ -71,14 +71,14 @@ def test_stream_dump_honors_directives_before_the_marker():
 
 def test_stream_reemit_uses_the_requested_explicit_start():
     stream = load_documents("---\na: x\n---\nb: y\n")
-    stream[0].node("a").style = "double"
+    stream[0]["a"].style = "double"
     assert stream.dump(explicit_start=False) == 'a: "x"\n---\nb: y\n'
     assert stream.dump(explicit_start=True) == '---\na: "x"\n---\nb: y\n'
 
 
 def test_stream_reemit_default_keeps_start_markers():
     stream = load_documents("---\na: x\n---\nb: y\n")
-    stream[0].node("a").style = "double"
+    stream[0]["a"].style = "double"
     assert stream.dump() == '---\na: "x"\n---\nb: y\n'
 
 
