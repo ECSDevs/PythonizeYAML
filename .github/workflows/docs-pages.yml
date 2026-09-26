@@ -37,6 +37,9 @@ jobs:
       - name: Build documentation
         run: pnpm docs:build
 
+      - name: Add .nojekyll
+        run: touch docs/.vuepress/dist/.nojekyll
+
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3
         with:

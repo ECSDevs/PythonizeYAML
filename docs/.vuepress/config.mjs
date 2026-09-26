@@ -3,6 +3,7 @@ import { viteBundler } from '@vuepress/bundler-vite'
 import { defaultTheme } from '@vuepress/theme-default'
 
 export default defineUserConfig({
+  base: '/PythonizeYAML/',
   locales: {
     '/': {
       lang: 'en-US',
