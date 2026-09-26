@@ -863,7 +863,7 @@ impl<'a> Parser<'a> {
         if false_values.contains(&lower.as_str()) {
             return (ScalarKind::Bool(false), lower);
         }
-        if looks_like_timestamp(raw) {
+        if parse_timestamp(raw).is_some() {
             return (ScalarKind::Timestamp, raw.to_owned());
         }
         if lower == ".inf" || lower == "+.inf" || lower == "-.inf" || lower == ".nan" {
@@ -1116,14 +1116,172 @@ fn normalize_float_text(raw: &str) -> String {
     strip_numeric_separators(raw)
 }
 
-fn looks_like_timestamp(value: &str) -> bool {
-    let bytes = value.as_bytes();
-    bytes.len() >= 10
-        && bytes.get(4) == Some(&b'-')
-        && bytes.get(7) == Some(&b'-')
-        && bytes[..4].iter().all(u8::is_ascii_digit)
-        && bytes[5..7].iter().all(u8::is_ascii_digit)
-        && bytes[8..10].iter().all(u8::is_ascii_digit)
+/// Components of a YAML 1.1 timestamp scalar.
+#[derive(Debug, PartialEq, Eq)]
+pub struct TimestampParts {
+    pub year: u16,
+    pub month: u8,
+    pub day: u8,
+    pub time: Option<TimestampTimeParts>,
+}
+
+/// Time-of-day components with an optional fixed UTC offset.
+#[derive(Debug, PartialEq, Eq)]
+pub struct TimestampTimeParts {
+    pub hour: u8,
+    pub minute: u8,
+    pub second: u8,
+    pub microsecond: u32,
+    pub tz_offset_seconds: Option<i32>,
+}
+
+/// Matches PyYAML's `SafeConstructor.timestamp_regexp`. Timestamps are parsed
+/// here instead of via `datetime.fromisoformat` so construction stays
+/// version-independent: `fromisoformat` only learned the `Z` suffix and
+/// 1-6 digit fractions in Python 3.11.
+pub fn parse_timestamp(text: &str) -> Option<TimestampParts> {
+    let bytes = text.as_bytes();
+    let (year, mut pos) = digits_exact(bytes, 0, 4)?;
+    if bytes.get(pos) != Some(&b'-') {
+        return None;
+    }
+    pos += 1;
+    let (month, pos) = digits_1_2(bytes, pos, b'-', false)?;
+    // The day length is ambiguous while the time part stays optional, so try
+    // the greedy two-digit match first and backtrack like the regexp does.
+    for day_len in [2usize, 1] {
+        let Some((day, after_day)) = digits_exact(bytes, pos, day_len) else {
+            continue;
+        };
+        let time = if after_day == bytes.len() {
+            None
+        } else {
+            match parse_timestamp_time(bytes, after_day) {
+                Some(time) => Some(time),
+                None => continue,
+            }
+        };
+        return Some(TimestampParts {
+            year: year as u16,
+            month: month as u8,
+            day: day as u8,
+            time,
+        });
+    }
+    None
+}
+
+/// Parses the `[Tt|whitespace]HH:MM:SS[.fraction][Z|±offset]` remainder,
+/// which must run to the end of the scalar.
+fn parse_timestamp_time(bytes: &[u8], pos: usize) -> Option<TimestampTimeParts> {
+    let pos = match bytes.get(pos) {
+        Some(b'T') | Some(b't') => pos + 1,
+        Some(b' ') | Some(b'\t') => {
+            let mut next = pos + 1;
+            while matches!(bytes.get(next), Some(b' ') | Some(b'\t')) {
+                next += 1;
+            }
+            next
+        }
+        _ => return None,
+    };
+    let (hour, pos) = digits_1_2(bytes, pos, b':', false)?;
+    let (minute, pos) = digits_exact(bytes, pos, 2)?;
+    if bytes.get(pos) != Some(&b':') {
+        return None;
+    }
+    let (second, pos) = digits_exact(bytes, pos + 1, 2)?;
+    let (microsecond, pos) = match bytes.get(pos) {
+        Some(b'.') => {
+            let start = pos + 1;
+            let mut end = start;
+            while bytes.get(end).is_some_and(|byte| byte.is_ascii_digit()) {
+                end += 1;
+            }
+            // PyYAML keeps the first six fraction digits and right-pads.
+            let used = (end - start).min(6);
+            let mut microsecond = 0u32;
+            for offset in start..start + used {
+                microsecond = microsecond * 10 + u32::from(bytes[offset] - b'0');
+            }
+            for _ in used..6 {
+                microsecond *= 10;
+            }
+            (microsecond, end)
+        }
+        _ => (0, pos),
+    };
+    // The optional offset may be preceded by whitespace and must end the
+    // scalar, so bare trailing whitespace never matches.
+    let tz_offset_seconds = if pos == bytes.len() {
+        None
+    } else {
+        let mut cursor = pos;
+        while matches!(bytes.get(cursor), Some(b' ') | Some(b'\t')) {
+            cursor += 1;
+        }
+        let offset = match bytes.get(cursor) {
+            Some(b'Z') => {
+                cursor += 1;
+                Some(0i32)
+            }
+            Some(b'+') | Some(b'-') => {
+                let sign: i32 = if bytes[cursor] == b'-' { -1 } else { 1 };
+                let (hour, after_hour) = digits_1_2(bytes, cursor + 1, b':', true)?;
+                // A remaining `:MM` was consumed by the hour match, so the
+                // minute digits are mandatory whenever input is left.
+                let (minute, after_minute) = if after_hour < bytes.len() {
+                    digits_exact(bytes, after_hour, 2)?
+                } else {
+                    (0, after_hour)
+                };
+                cursor = after_minute;
+                Some(sign * (hour as i32 * 3600 + minute as i32 * 60))
+            }
+            _ => return None,
+        };
+        if cursor != bytes.len() {
+            return None;
+        }
+        offset
+    };
+    Some(TimestampTimeParts {
+        hour: hour as u8,
+        minute: minute as u8,
+        second: second as u8,
+        microsecond,
+        tz_offset_seconds,
+    })
+}
+
+/// Reads exactly `count` ASCII digits, returning the value and new position.
+fn digits_exact(bytes: &[u8], pos: usize, count: usize) -> Option<(u32, usize)> {
+    let mut value = 0u32;
+    for offset in 0..count {
+        let byte = *bytes.get(pos + offset)?;
+        if !byte.is_ascii_digit() {
+            return None;
+        }
+        value = value * 10 + u32::from(byte - b'0');
+    }
+    Some((value, pos + count))
+}
+
+/// Matches `[0-9][0-9]?`, trying two digits first and retrying with one until
+/// the match is followed by `follower` (or the end of input when `allow_end`).
+/// The delimiter is consumed as part of the match.
+fn digits_1_2(bytes: &[u8], pos: usize, follower: u8, allow_end: bool) -> Option<(u32, usize)> {
+    for count in [2usize, 1] {
+        let Some((value, next)) = digits_exact(bytes, pos, count) else {
+            continue;
+        };
+        match bytes.get(next) {
+            Some(&byte) if byte == follower => return Some((value, next + 1)),
+            None if allow_end => return Some((value, next)),
+            _ => {}
+        }
+    }
+    None
 }
 fn fold_lines(parts: &[String]) -> String {
     let mut out = String::new();
@@ -1554,5 +1712,86 @@ mod tests {
         let source = "# comment\nvalue: '1'\n";
         let document = parse(source).unwrap();
         assert_eq!(document.text, source);
+    }
+
+    #[test]
+    fn timestamps_follow_the_pyyaml_grammar() {
+        fn parts(
+            hour: u8,
+            microsecond: u32,
+            tz_offset_seconds: Option<i32>,
+        ) -> Option<TimestampParts> {
+            Some(TimestampParts {
+                year: 2001,
+                month: 12,
+                day: 15,
+                time: Some(TimestampTimeParts {
+                    hour,
+                    minute: 59,
+                    second: 43,
+                    microsecond,
+                    tz_offset_seconds,
+                }),
+            })
+        }
+        assert_eq!(
+            parse_timestamp("2001-12-15T02:59:43Z"),
+            parts(2, 0, Some(0))
+        );
+        // Lowercase separator and single-digit hour.
+        assert_eq!(
+            parse_timestamp("2001-12-15t2:59:43.1Z"),
+            parts(2, 100_000, Some(0))
+        );
+        assert_eq!(
+            parse_timestamp("2001-12-15T02:59:43+05:30"),
+            parts(2, 0, Some(19_800))
+        );
+        assert_eq!(
+            parse_timestamp("2001-12-15T02:59:43+5"),
+            parts(2, 0, Some(18_000))
+        );
+        // Space separator with an hour-only negative offset and short fraction.
+        assert_eq!(
+            parse_timestamp("2001-12-14 21:59:43.10 -5"),
+            Some(TimestampParts {
+                year: 2001,
+                month: 12,
+                day: 14,
+                time: Some(TimestampTimeParts {
+                    hour: 21,
+                    minute: 59,
+                    second: 43,
+                    microsecond: 100_000,
+                    tz_offset_seconds: Some(-18_000),
+                }),
+            })
+        );
+        // Date-only, single-digit month and day.
+        assert_eq!(
+            parse_timestamp("2001-12-1"),
+            Some(TimestampParts {
+                year: 2001,
+                month: 12,
+                day: 1,
+                time: None,
+            })
+        );
+        // Long fractions are truncated to six digits.
+        assert_eq!(
+            parse_timestamp("2001-12-15T02:59:43.123456789")
+                .unwrap()
+                .time
+                .unwrap()
+                .microsecond,
+            123_456
+        );
+        // Near-misses stay out of the timestamp type, like PyYAML.
+        assert_eq!(parse_timestamp("2001-12-15xx"), None);
+        assert_eq!(parse_timestamp("2001-12-15T02:59"), None);
+        assert_eq!(parse_timestamp("2001-12-15T02:59:43z"), None);
+        assert_eq!(parse_timestamp("2001-12-15 "), None);
+        assert_eq!(parse_timestamp("2001-1"), None);
+        assert_eq!(parse_timestamp(""), None);
     }
 }

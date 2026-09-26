@@ -83,6 +83,35 @@ def test_standard_collection_and_scalar_tags():
     assert timestamp == dt.datetime(2001, 12, 15, 2, 59, 43, tzinfo=dt.timezone.utc)
 
 
+def test_yaml_timestamp_grammar_matches_pyyaml():
+    utc = dt.timezone.utc
+    # Z suffix, the form datetime.fromisoformat rejects before Python 3.11.
+    assert py.load("value: 2001-12-15T02:59:43Z\n")["value"] == dt.datetime(
+        2001, 12, 15, 2, 59, 43, tzinfo=utc
+    )
+    # Lowercase separator, single-digit hour, and short fraction.
+    assert py.load("value: 2001-12-15t2:59:43.1Z\n")["value"] == dt.datetime(
+        2001, 12, 15, 2, 59, 43, 100000, tzinfo=utc
+    )
+    # Space separator with an hour-only negative offset.
+    assert py.load("value: 2001-12-14 21:59:43.10 -5\n")["value"] == dt.datetime(
+        2001, 12, 14, 21, 59, 43, 100000, tzinfo=dt.timezone(dt.timedelta(hours=-5))
+    )
+    naive = py.load("value: 2001-12-14 21:59:43\n")["value"]
+    assert naive == dt.datetime(2001, 12, 14, 21, 59, 43)
+    assert naive.tzinfo is None
+    assert py.load("value: 2001-12-15\n")["value"] == dt.date(2001, 12, 15)
+
+
+def test_timestamp_lookalikes_stay_strings_and_bad_explicit_tags_raise():
+    assert py.load("value: 2001-12-15xx\n")["value"] == "2001-12-15xx"
+    assert py.load("value: 2001-12-15 21:59\n")["value"] == "2001-12-15 21:59"
+    with pytest.raises(ValueError):
+        py.load("value: !!timestamp 2001-12-15xx\n")
+    with pytest.raises(ValueError):
+        py.load("value: 2001-13-45\n")
+
+
 def test_merge_keys_resolve_but_round_trip_the_original_source():
     source = "base: &base {x: 1}\nmerged:\n  <<: *base\n  y: 2\n"
     data = py.load(source)

@@ -419,21 +419,44 @@ fn materialize_scalar(py: Python<'_>, scalar: &Scalar) -> PyResult<Py<PyAny>> {
                 .map_err(|_| PyValueError::new_err("invalid !!binary value"))?;
             Ok(PyBytes::new(py, &decoded).into_any().unbind())
         }
-        ScalarKind::Timestamp => {
-            let text = scalar.value.trim();
-            let module = py.import("datetime")?;
-            let value = if text.contains(' ') || text.contains('T') {
-                module
-                    .getattr("datetime")?
-                    .call_method1("fromisoformat", (text,))?
-            } else {
-                module
-                    .getattr("date")?
-                    .call_method1("fromisoformat", (text,))?
-            };
-            Ok(value.unbind())
-        }
+        ScalarKind::Timestamp => materialize_timestamp(py, scalar.value.trim()),
     }
+}
+
+/// Builds `datetime.date`/`datetime.datetime` from the YAML timestamp
+/// components so construction does not depend on `datetime.fromisoformat`,
+/// whose accepted formats vary by Python version (`Z` and short fractions
+/// are 3.11+ only).
+fn materialize_timestamp(py: Python<'_>, text: &str) -> PyResult<Py<PyAny>> {
+    let module = py.import("datetime")?;
+    let Some(parts) = parser::parse_timestamp(text) else {
+        return Err(PyValueError::new_err("invalid !!timestamp value"));
+    };
+    let Some(time) = parts.time else {
+        let value = module
+            .getattr("date")?
+            .call1((parts.year, parts.month, parts.day))?;
+        return Ok(value.unbind());
+    };
+    let tzinfo = match time.tz_offset_seconds {
+        None => py.None(),
+        Some(0) => module.getattr("timezone")?.getattr("utc")?.unbind(),
+        Some(offset) => {
+            let delta = module.getattr("timedelta")?.call1((0, offset, 0))?;
+            module.getattr("timezone")?.call1((delta,))?.unbind()
+        }
+    };
+    let value = module.getattr("datetime")?.call1((
+        parts.year,
+        parts.month,
+        parts.day,
+        time.hour,
+        time.minute,
+        time.second,
+        time.microsecond,
+        tzinfo,
+    ))?;
+    Ok(value.unbind())
 }
 
 pub fn dump_value(
