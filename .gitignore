@@ -9,3 +9,5 @@ __pycache__/
 rust/examples/
 .trae/
 node_modules/
+docs/.vuepress/.cache/
+docs/.vuepress/.temp/

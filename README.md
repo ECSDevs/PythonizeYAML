@@ -1,5 +1,7 @@
 # pythonizeyaml
 
+English | [简体中文](README.zh_CN.md)
+
 `pythonizeyaml` is a YAML library with a PyYAML-compatible API and a lossless
 round-trip engine implemented in Rust. Loading and dumping an untouched document
 reproduces its source text, including comments, blank lines, indentation, scalar
@@ -163,7 +165,7 @@ text = document.dump()
 
 `load_document()` returns one mutable `Document`; `load_documents()` returns a
 list-like `DocumentStream`. `Document.node(*path)` returns a `NodeRef`, while
-`Document.value(*path)` and direct `document[path]` access return ordinary Python
+`Document.at(*path)` and direct `document[path]` access return ordinary Python
 values. Use `Document.new()` or `Document.set(...)` to create styled documents.
 
 `NodeRef` exposes `style`, `collection_style`, `chomping`,
