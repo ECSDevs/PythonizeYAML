@@ -43,9 +43,14 @@ def test_inexact_decimal_becomes_arbitrary_precision_decimal():
 
 
 def test_out_of_range_decimal_does_not_become_infinity():
-    value = py.load("value: 1e400\n")["value"]
-    assert value == Decimal("1e400")
+    # `1.0e+400` is a PyYAML float that overflows to ``inf``; the engine's
+    # extended schema keeps it as an exact Decimal instead. (Bare ``1e400``
+    # is a string under PyYAML's YAML 1.1 float grammar, which needs a
+    # decimal point and a signed exponent.)
+    value = py.load("value: 1.0e+400\n")["value"]
+    assert value == Decimal("1.0e+400")
     assert type(value) is Decimal
+    assert py.safe_load("1e400\n") == "1e400"
 
 
 def test_explicit_float_and_decimal_tags_override_implicit_resolution():
@@ -106,10 +111,47 @@ def test_yaml_timestamp_grammar_matches_pyyaml():
 def test_timestamp_lookalikes_stay_strings_and_bad_explicit_tags_raise():
     assert py.load("value: 2001-12-15xx\n")["value"] == "2001-12-15xx"
     assert py.load("value: 2001-12-15 21:59\n")["value"] == "2001-12-15 21:59"
-    with pytest.raises(ValueError):
+    # Invalid timestamp payloads surface through the library's constructor
+    # error, not a bare ValueError.
+    with pytest.raises(ConstructorError):
         py.load("value: !!timestamp 2001-12-15xx\n")
-    with pytest.raises(ValueError):
+    with pytest.raises(ConstructorError):
         py.load("value: 2001-13-45\n")
+
+
+def test_invalid_binary_payloads_raise_constructor_error():
+    with pytest.raises(ConstructorError):
+        py.load("value: !!binary not-base64!!\n")
+
+
+def test_unhashable_mapping_keys_raise_constructor_error():
+    with pytest.raises(ConstructorError):
+        py.load("{[a, b]: v}\n")
+
+
+def test_dump_with_patches_rejects_spans_outside_the_source():
+    from pythonizeyaml import SerializerError, _native
+    from pythonizeyaml.errors import translate_native_error
+
+    document = py.load_document("a: 1\n")
+    # The native layer reports bad spans as NativeYamlError (kind 6); the
+    # public SerializerError comes from the engine's translation.
+    with pytest.raises(_native.NativeYamlError) as excinfo:
+        _native.dump_with_patches(
+            document._data,
+            [(len(document.source) + 10, len(document.source) + 20, "x")],
+            handle=document._handle,
+            node_id=document._root_id,
+        )
+    assert isinstance(translate_native_error(excinfo.value, document.source), SerializerError)
+
+
+def test_comment_patches_align_on_non_ascii_sources():
+    document = py.load_document("ключ: значение\nдругой: два\n")
+    document.node("другой").comments.inline = "# y"
+    assert document.dump() == "ключ: значение\nдругой: два  # y\n"
+    document.node("ключ").comments.inline = "# x"
+    assert document.dump() == "ключ: значение  # x\nдругой: два  # y\n"
 
 
 def test_merge_keys_resolve_but_round_trip_the_original_source():

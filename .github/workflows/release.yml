@@ -15,37 +15,94 @@ jobs:
         include:
           - os: ubuntu-latest
             target: x86_64
+          - os: ubuntu-latest
+            target: aarch64
           - os: windows-latest
             target: x86_64
           - os: macos-14
             target: aarch64
+          - os: macos-15-intel
+            target: x86_64
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: "3.11"
-      - uses: PyO3/maturin-action@v1
+      - uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b # v1
         with:
           command: build
           args: --release --out dist
           target: ${{ matrix.target }}
           manylinux: auto
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: release-${{ matrix.os }}-${{ matrix.target }}
           path: dist
 
-  publish:
+  sdist:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.11"
+      - uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b # v1
+        with:
+          command: sdist
+          args: --out dist
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: sdist
+          path: dist
+
+  test-wheels:
     needs: build
+    # The linux aarch64 wheel is cross-compiled and has no matching hosted
+    # runner, so it is not exercised here (the wheel build itself ran in QEMU).
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            artifact: release-ubuntu-latest-x86_64
+          - os: windows-latest
+            artifact: release-windows-latest-x86_64
+          - os: macos-14
+            artifact: release-macos-14-aarch64
+          - os: macos-15-intel
+            artifact: release-macos-15-intel-x86_64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.12"
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: dist
+      - name: Install built wheel
+        # --no-index guarantees the wheel under test is imported, not PyPI.
+        run: python -m pip install --no-index --find-links dist pythonizeyaml
+      - run: python -m pip install pytest
+      # src/ layout: the tests import the installed wheel, not the checkout.
+      - run: python -m pytest tests/ -q
+
+  publish:
+    needs: [test-wheels, sdist]
     runs-on: ubuntu-latest
     environment: pypi
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           pattern: release-*
           path: dist
           merge-multiple: true
-      - uses: pypa/gh-action-pypi-publish@release/v1
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: sdist
+          path: dist
+      - uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # release/v1
         with:
           packages-dir: dist

@@ -1,0 +1,13 @@
+# Multi-line quoted scalars.
+double: "multi
+  line double"
+single: 'multi
+  line single'
+blank inside: "keep
+
+  going"
+hash inside: "not # a comment
+  second"
+flow: ["in
+  flow", 'also
+  multi']

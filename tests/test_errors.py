@@ -70,7 +70,7 @@ def test_the_error_carries_a_mark_and_a_problem(malformed_source):
 
 def test_load_all_raises_the_same_library_error(malformed_source):
     with pytest.raises(YAMLError):
-        py.load_all(malformed_source)
+        list(py.load_all(malformed_source))
 
 
 def test_unclosed_flow_sequence_reports_a_parser_error():

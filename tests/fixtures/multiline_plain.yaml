@@ -1,0 +1,13 @@
+# Multi-line plain scalars: folding across lines.
+folded: multi
+  line value
+continued: keeps going
+  line after line
+  and one more
+blank separated: first
+
+  second
+deeper lines: top
+    extra deep
+  back to shallow
+end: 2

@@ -42,7 +42,9 @@ in the current context, or indentation is malformed.
 ### `ParserError`
 
 The token stream does not form valid YAML grammar, for example a flow
-sequence that is never closed.
+sequence that is never closed. The parser also enforces a 128-level nesting
+depth limit (matching libyaml's default): input nested deeper than that
+raises `ParserError` instead of exhausting the stack.
 
 ### `ComposerError`
 
@@ -63,11 +65,15 @@ The native emitter failed while writing YAML text.
 ## `RepresenterError`
 
 A value cannot be represented. Raised by the safe engine when `Tagged`
-values appear in `safe_dump()` input.
+values or custom application tags appear in `safe_dump()` input, and when a
+value such as a complex number is dumped in a place where no YAML
+representation exists.
 
 ## `SerializerError`
 
-The serialization step failed before emission.
+The serialization step failed before emission, for example when a mapping
+key cannot be represented: complex numbers are supported as values but
+raise `SerializerError` when used as mapping keys.
 
 ## `PathError`
 

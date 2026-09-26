@@ -68,7 +68,7 @@ pub fn parse_value(
         py,
         &handle.borrow(py).inner,
         root,
-        &handle.bind(py).as_any(),
+        handle.bind(py).as_any(),
         safe,
         &mut memo,
     )?;
@@ -101,7 +101,7 @@ pub fn parse_all_values(
             py,
             &handle.borrow(py).inner,
             root,
-            &handle.bind(py).as_any(),
+            handle.bind(py).as_any(),
             safe,
             &mut memo,
         )?)?;
@@ -187,7 +187,15 @@ fn materialize_untagged(
     }
     let node = document.arena.node(node_id);
     match &node.kind {
-        NodeKind::Scalar(scalar) => materialize_scalar(py, scalar),
+        NodeKind::Scalar(scalar) => {
+            // Quoted scalars always carry `ScalarKind::Str` in the arena with
+            // the explicit tag attached to the node itself, so re-apply the
+            // tag here; otherwise `!!binary "!!!"` would silently materialize
+            // the raw string instead of raising a constructor error.
+            let scalar =
+                apply_explicit_tag(scalar, node.tag.as_deref(), node.span).map_err(native_error)?;
+            materialize_scalar(py, &scalar, node.span)
+        }
         NodeKind::Alias(target) => materialize_node(py, document, *target, handle, safe, memo),
         NodeKind::Tagged { tag, value } => {
             if tag.ends_with(":set") {
@@ -263,9 +271,16 @@ fn materialize_mapping(
         .filter(|entry| !is_merge_key(document, entry.key))
     {
         let key = materialize_node(py, document, entry.key, handle, safe, memo)?;
+        if key.bind(py).hash().is_err() {
+            return Err(native_error(YamlError::new(
+                ErrorKind::Constructor,
+                "found unhashable key",
+                entry.key_span,
+            )));
+        }
         if seen
             .iter()
-            .any(|existing| existing.bind(py).eq(&key.bind(py)).unwrap_or(false))
+            .any(|existing| existing.bind(py).eq(key.bind(py)).unwrap_or(false))
         {
             return Err(native_error(YamlError::new(
                 ErrorKind::Constructor,
@@ -292,7 +307,7 @@ fn is_merge_key(document: &ModelDocument, node_id: NodeId) -> bool {
 }
 
 fn merge_mapping<'py>(
-    py: Python<'py>,
+    _py: Python<'py>,
     target: &Bound<'py, PyDict>,
     source: &Bound<'py, PyAny>,
     metadata: &Bound<'py, PyDict>,
@@ -308,7 +323,7 @@ fn merge_mapping<'py>(
     }
     if let Ok(items) = source.cast::<PyList>() {
         for item in items.iter() {
-            merge_mapping(py, target, &item, metadata)?;
+            merge_mapping(_py, target, &item, metadata)?;
         }
     }
     Ok(())
@@ -320,7 +335,7 @@ fn materialize_pairs(py: Python<'_>, value: &Bound<'_, PyAny>) -> PyResult<Py<Py
     };
     let output = PyList::empty(py);
     for item in items.iter() {
-        if let Some(mapping) = item.cast::<PyDict>().ok() {
+        if let Ok(mapping) = item.cast::<PyDict>() {
             if mapping.len() == 1 {
                 for (key, value) in mapping.iter() {
                     output.append(PyTuple::new(py, [key, value])?)?;
@@ -346,11 +361,18 @@ fn materialize_set(
         let keys: Vec<_> = entries.iter().map(|entry| entry.key).collect();
         return materialize_set_items(py, document, node_id, &keys, handle, safe, memo);
     }
-    let inner = match &node.kind {
-        NodeKind::Tagged { value, .. } => *value,
-        _ => node_id,
-    };
-    materialize_node(py, document, inner, handle, safe, memo)
+    match &node.kind {
+        NodeKind::Set(items) => {
+            materialize_set_items(py, document, node_id, items, handle, safe, memo)
+        }
+        NodeKind::Tagged { value, .. } => {
+            materialize_node(py, document, *value, handle, safe, memo)
+        }
+        // A set tag on anything else (e.g. a bare scalar) has no members to
+        // iterate; materialize the node itself instead of recursing back into
+        // `materialize_set` with the same id.
+        _ => materialize_untagged(py, document, node_id, handle, safe, memo),
+    }
 }
 
 fn materialize_set_items(
@@ -374,6 +396,13 @@ fn materialize_set_items(
     let metadata = PyDict::new(py);
     for item in items {
         let value = materialize_node(py, document, *item, handle, safe, memo)?;
+        if value.bind(py).hash().is_err() {
+            return Err(native_error(YamlError::new(
+                ErrorKind::Constructor,
+                "found unhashable key",
+                document.arena.node(*item).span,
+            )));
+        }
         set.add(value.bind(py))?;
         metadata.set_item(value.bind(py), *item)?;
     }
@@ -383,7 +412,54 @@ fn materialize_set_items(
     Ok(container.unbind())
 }
 
-fn materialize_scalar(py: Python<'_>, scalar: &Scalar) -> PyResult<Py<PyAny>> {
+/// Re-applies an explicit YAML core tag to a scalar. Plain scalars already
+/// carry the tag's kind from the parser's `classify_scalar`, so this is
+/// idempotent for them; quoted and block scalars always arrive as `Str` and
+/// need the tag's conversion here.
+fn apply_explicit_tag(scalar: &Scalar, tag: Option<&str>, span: Span) -> Result<Scalar, YamlError> {
+    let Some(suffix) = tag.and_then(|tag| tag.strip_prefix("tag:yaml.org,2002:")) else {
+        return Ok(scalar.clone());
+    };
+    let mut result = scalar.clone();
+    result.kind = match suffix {
+        "str" => ScalarKind::Str,
+        "null" => ScalarKind::Null,
+        "int" => {
+            // Quoted `!!int` scalars keep their raw spelling; normalize it the
+            // same way the parser does for plain integers so materialization
+            // and dirty checks see decimal text.
+            result.value = crate::number::integer_to_decimal_string(
+                &scalar.value,
+                crate::number::SchemaVersion::Yaml11,
+            )
+            .unwrap_or_else(|| scalar.value.clone());
+            ScalarKind::Int
+        }
+        "float" => ScalarKind::Float,
+        "decimal" => ScalarKind::Decimal,
+        "binary" => ScalarKind::Binary,
+        "timestamp" => ScalarKind::Timestamp,
+        "bool" => {
+            let lower = scalar.value.to_ascii_lowercase();
+            match lower.as_str() {
+                "true" | "yes" | "on" => ScalarKind::Bool(true),
+                "false" | "no" | "off" => ScalarKind::Bool(false),
+                _ => {
+                    return Err(YamlError::new(
+                        ErrorKind::Constructor,
+                        format!("could not resolve !!bool value '{}'", scalar.value),
+                        span,
+                    ));
+                }
+            }
+        }
+        // Non-core tags and the merge tag are left to the caller.
+        _ => return Ok(scalar.clone()),
+    };
+    Ok(result)
+}
+
+fn materialize_scalar(py: Python<'_>, scalar: &Scalar, span: Span) -> PyResult<Py<PyAny>> {
     match &scalar.kind {
         ScalarKind::Null => Ok(py.None()),
         ScalarKind::Bool(value) => Ok(PyBool::new(py, *value).to_owned().unbind().into_any()),
@@ -399,9 +475,13 @@ fn materialize_scalar(py: Python<'_>, scalar: &Scalar) -> PyResult<Py<PyAny>> {
                 "inf" => f64::INFINITY,
                 "-inf" => f64::NEG_INFINITY,
                 "nan" => f64::NAN,
-                value => value
-                    .parse::<f64>()
-                    .map_err(|_| PyValueError::new_err("invalid float"))?,
+                value => value.parse::<f64>().map_err(|_| {
+                    native_error(YamlError::new(
+                        ErrorKind::Constructor,
+                        format!("could not resolve float value '{value}'"),
+                        span,
+                    ))
+                })?,
             };
             Ok(PyFloat::new(py, value).into_any().unbind())
         }
@@ -416,10 +496,16 @@ fn materialize_scalar(py: Python<'_>, scalar: &Scalar) -> PyResult<Py<PyAny>> {
         ScalarKind::Binary => {
             let decoded = base64::engine::general_purpose::STANDARD
                 .decode(scalar.value.trim())
-                .map_err(|_| PyValueError::new_err("invalid !!binary value"))?;
+                .map_err(|_| {
+                    native_error(YamlError::new(
+                        ErrorKind::Constructor,
+                        format!("invalid !!binary value '{}'", scalar.value.trim()),
+                        span,
+                    ))
+                })?;
             Ok(PyBytes::new(py, &decoded).into_any().unbind())
         }
-        ScalarKind::Timestamp => materialize_timestamp(py, scalar.value.trim()),
+        ScalarKind::Timestamp => materialize_timestamp(py, scalar.value.trim(), span),
     }
 }
 
@@ -427,16 +513,41 @@ fn materialize_scalar(py: Python<'_>, scalar: &Scalar) -> PyResult<Py<PyAny>> {
 /// components so construction does not depend on `datetime.fromisoformat`,
 /// whose accepted formats vary by Python version (`Z` and short fractions
 /// are 3.11+ only).
-fn materialize_timestamp(py: Python<'_>, text: &str) -> PyResult<Py<PyAny>> {
-    let module = py.import("datetime")?;
+fn materialize_timestamp(py: Python<'_>, text: &str, span: Span) -> PyResult<Py<PyAny>> {
     let Some(parts) = parser::parse_timestamp(text) else {
-        return Err(PyValueError::new_err("invalid !!timestamp value"));
+        return Err(native_error(YamlError::new(
+            ErrorKind::Constructor,
+            format!("invalid !!timestamp value '{text}'"),
+            span,
+        )));
     };
-    let Some(time) = parts.time else {
+    let value = build_timestamp_value(py, &parts).map_err(|err| {
+        // Grammar-valid but calendar-invalid text (e.g. `2001-13-45`) makes
+        // datetime construction itself fail; funnel it through the normal
+        // error translation instead of leaking a raw ValueError.
+        if err.is_instance_of::<PyValueError>(py) {
+            native_error(YamlError::new(
+                ErrorKind::Constructor,
+                format!("invalid !!timestamp value '{text}'"),
+                span,
+            ))
+        } else {
+            err
+        }
+    })?;
+    Ok(value.unbind())
+}
+
+fn build_timestamp_value<'py>(
+    py: Python<'py>,
+    parts: &parser::TimestampParts,
+) -> PyResult<Bound<'py, PyAny>> {
+    let module = py.import("datetime")?;
+    let Some(time) = parts.time.as_ref() else {
         let value = module
             .getattr("date")?
             .call1((parts.year, parts.month, parts.day))?;
-        return Ok(value.unbind());
+        return Ok(value.into_any());
     };
     let tzinfo = match time.tz_offset_seconds {
         None => py.None(),
@@ -456,7 +567,7 @@ fn materialize_timestamp(py: Python<'_>, text: &str) -> PyResult<Py<PyAny>> {
         time.microsecond,
         tzinfo,
     ))?;
-    Ok(value.unbind())
+    Ok(value.into_any())
 }
 
 pub fn dump_value(
@@ -474,31 +585,174 @@ pub fn dump_value(
     if let Some(handle) = handle {
         let document = handle.cast::<NativeDocument>()?;
         let native = document.borrow();
-        if !has_dirty(value)? && native.inner.documents.len() == 1 {
-            let mut text = native.inner.text.clone();
-            if explicit_start == Some(true) && !text.trim_start().starts_with("---") {
-                text.insert_str(0, "---\n");
-            } else if explicit_start == Some(false) && text.trim_start().starts_with("---") {
-                text = remove_explicit_start(&text);
-            }
-            return Ok(text);
-        }
+        let model = &native.inner;
+        let node_id = if node_id >= 0 && (node_id as usize) < model.arena.nodes.len() {
+            node_id as usize
+        } else {
+            usize::MAX
+        };
         if !has_dirty(value)? {
-            return Ok(native.inner.text.clone());
+            return clean_dump_text(model, node_id, explicit_start);
         }
-        let mut edits = Vec::new();
-        collect_edits(
-            py,
-            value,
-            &native.inner,
-            node_id as usize,
-            config,
-            false,
-            &mut edits,
-        )?;
-        return apply_edits(&native.inner.text, edits);
+        return dirty_dump_text(py, value, model, node_id, config, explicit_start);
     }
     emit_single(py, value, config, explicit_start).map_err(native_error)
+}
+
+/// The dirty-path text for a value carrying a node id: single-document roots
+/// dump the edited whole source, roots inside a multi-document stream dump
+/// only their own edited document, and any other node is re-emitted from its
+/// own edited source text.
+fn dirty_dump_text(
+    py: Python<'_>,
+    value: &Bound<'_, PyAny>,
+    model: &ModelDocument,
+    node_id: NodeId,
+    config: EmitConfig,
+    explicit_start: Option<bool>,
+) -> PyResult<String> {
+    let mut edits = Vec::new();
+    collect_edits(py, value, model, node_id, config, false, &mut edits)?;
+    let is_root = node_id == usize::MAX
+        || model
+            .documents
+            .iter()
+            .any(|document| document.root == node_id);
+    if is_root {
+        if model.documents.len() == 1 {
+            let text = apply_edits(&model.text, edits)?;
+            return Ok(apply_explicit_start_override(text, explicit_start));
+        }
+        if let Some(document) = model
+            .documents
+            .iter()
+            .find(|document| document.root == node_id)
+        {
+            let span = document.span;
+            let base = slice_source(model, span)?;
+            let shifted: Vec<(Span, String)> = edits
+                .into_iter()
+                .filter(|(edit_span, _)| edit_span.start >= span.start && edit_span.end <= span.end)
+                .map(|(edit_span, replacement)| {
+                    (
+                        Span::new(edit_span.start - span.start, edit_span.end - span.start),
+                        replacement,
+                    )
+                })
+                .collect();
+            let mut text = apply_edits(&base, shifted)?;
+            if !text.ends_with('\n') {
+                text.push('\n');
+            }
+            return Ok(apply_explicit_start_override(text, explicit_start));
+        }
+        let text = apply_edits(&model.text, edits)?;
+        return Ok(apply_explicit_start_override(text, explicit_start));
+    }
+    sub_node_dump_text(model, node_id, edits)
+}
+
+/// The clean-path text for a value carrying a node id. Document roots dump
+/// their document text (the whole source for a single-document stream); any
+/// other node dumps exactly its own source text, so `dump(d["a"])` yields
+/// `b: 1` instead of the whole document and `dump(stream[0])` yields only
+/// the first document of a stream.
+fn clean_dump_text(
+    model: &ModelDocument,
+    node_id: NodeId,
+    explicit_start: Option<bool>,
+) -> PyResult<String> {
+    if node_id == usize::MAX {
+        if model.documents.len() == 1 {
+            return Ok(apply_explicit_start_override(
+                model.text.clone(),
+                explicit_start,
+            ));
+        }
+        return Ok(model.text.clone());
+    }
+    if model.documents.len() == 1 && model.documents[0].root == node_id {
+        return Ok(apply_explicit_start_override(
+            model.text.clone(),
+            explicit_start,
+        ));
+    }
+    if let Some(document) = model
+        .documents
+        .iter()
+        .find(|document| document.root == node_id)
+    {
+        let mut text = slice_source(model, document.span)?;
+        if !text.ends_with('\n') {
+            text.push('\n');
+        }
+        return Ok(apply_explicit_start_override(text, explicit_start));
+    }
+    let mut text = slice_source(model, model.arena.node(node_id).span)?;
+    if !text.ends_with('\n') {
+        text.push('\n');
+    }
+    Ok(text)
+}
+
+/// Applies the collected data edits to only the given node's source text.
+/// Edits outside the node's own span (an alias resolving to a target
+/// elsewhere in the document) cannot be applied to the slice and are skipped.
+fn sub_node_dump_text(
+    model: &ModelDocument,
+    node_id: NodeId,
+    edits: Vec<(Span, String)>,
+) -> PyResult<String> {
+    let span = model.arena.node(node_id).span;
+    let base = slice_source(model, span)?;
+    let mut shifted: Vec<(Span, String)> = Vec::new();
+    for (edit_span, replacement) in edits {
+        if edit_span.start >= span.start && edit_span.end <= span.end {
+            shifted.push((
+                Span::new(edit_span.start - span.start, edit_span.end - span.start),
+                replacement,
+            ));
+        }
+    }
+    let mut text = apply_edits(&base, shifted)?;
+    if !text.ends_with('\n') {
+        text.push('\n');
+    }
+    Ok(text)
+}
+
+fn slice_source(model: &ModelDocument, span: Span) -> PyResult<String> {
+    model
+        .text
+        .get(span.range())
+        .map(str::to_owned)
+        .ok_or_else(|| {
+            native_error(YamlError::new(
+                ErrorKind::Serializer,
+                "internal error: node span out of range",
+                span,
+            ))
+        })
+}
+
+/// Expands a node's span to the full source lines it occupies, so a removal
+/// edit deletes the whole entry including its indentation, dash/key, and the
+/// trailing newline. Spans that already end at a newline (mapping
+/// `entry_span`) are kept as-is.
+fn entry_line_range(text: &str, span: Span) -> Span {
+    let start = text[..span.start]
+        .rfind('\n')
+        .map(|pos| pos + 1)
+        .unwrap_or(0);
+    let end = if text[..span.end].ends_with('\n') {
+        span.end
+    } else {
+        text[span.end..]
+            .find('\n')
+            .map(|pos| span.end + pos + 1)
+            .unwrap_or(text.len())
+    };
+    Span::new(start, end)
 }
 
 fn collect_edits(
@@ -516,7 +770,7 @@ fn collect_edits(
     let node = document.arena.node(node_id);
     match &node.kind {
         NodeKind::Scalar(scalar) => {
-            if !scalar_matches_py(value, scalar)? {
+            if !scalar_matches_py(py, value, scalar)? {
                 edits.push((
                     node.value_span,
                     encode_scalar(py, value, scalar, document, node.value_span, config)?,
@@ -552,9 +806,43 @@ fn collect_edits(
             let ids = wrapper_node_ids(value, "_pyy_node_ids", list.len());
             if ids.len() != items.len() {
                 if suppress_structural {
-                    for (index, child_id) in items.iter().enumerate().take(list.len()) {
-                        let child = list.get_item(index)?;
-                        collect_edits(py, &child, document, *child_id, config, true, edits)?;
+                    // A structural edit (a removal) shifted item positions, so
+                    // the wrapper's own per-item ids — not the zip position —
+                    // map each remaining value to its true source node.
+                    if ids
+                        .iter()
+                        .any(|id| *id < 0 || *id as usize >= document.arena.nodes.len())
+                    {
+                        edits.push((
+                            node.span,
+                            canonical_edit(
+                                py,
+                                value,
+                                config,
+                                node_base_indent(document, node.span),
+                            )?,
+                        ));
+                        return Ok(());
+                    }
+                    for (child_id, child) in ids.iter().zip(list.iter()) {
+                        collect_edits(
+                            py,
+                            &child,
+                            document,
+                            *child_id as usize,
+                            config,
+                            true,
+                            edits,
+                        )?;
+                    }
+                    // Source entries whose node no longer exists in the data
+                    // must be deleted; nothing else emits their lines.
+                    let surviving: Vec<usize> = ids.iter().map(|id| *id as usize).collect();
+                    for child_id in items.iter() {
+                        if !surviving.contains(child_id) {
+                            let span = document.arena.node(*child_id).span;
+                            edits.push((entry_line_range(&document.text, span), String::new()));
+                        }
                     }
                     return Ok(());
                 }
@@ -591,11 +879,21 @@ fn collect_edits(
                         let Some(key) =
                             find_python_key(py, mapping, &document.arena.node(entry.key).kind)?
                         else {
+                            // The entry was removed from the data; delete its
+                            // source lines since nothing else emits the removal.
+                            edits.push((
+                                entry_line_range(&document.text, entry.entry_span),
+                                String::new(),
+                            ));
                             continue;
                         };
-                        let child = mapping
-                            .get_item(&key)?
-                            .ok_or_else(|| PyValueError::new_err("mapping key disappeared"))?;
+                        let child = mapping.get_item(&key)?.ok_or_else(|| {
+                            native_error(YamlError::new(
+                                ErrorKind::Constructor,
+                                "mapping key disappeared",
+                                entry.key_span,
+                            ))
+                        })?;
                         collect_edits(py, &child, document, entry.value, config, true, edits)?;
                     }
                     return Ok(());
@@ -615,9 +913,13 @@ fn collect_edits(
                     ));
                     return Ok(());
                 };
-                let child = mapping
-                    .get_item(&key)?
-                    .ok_or_else(|| PyValueError::new_err("mapping key disappeared"))?;
+                let child = mapping.get_item(&key)?.ok_or_else(|| {
+                    native_error(YamlError::new(
+                        ErrorKind::Constructor,
+                        "mapping key disappeared",
+                        entry.key_span,
+                    ))
+                })?;
                 collect_edits(
                     py,
                     &child,
@@ -673,7 +975,7 @@ fn canonical_edit(
     Ok(rendered)
 }
 
-fn scalar_matches_py(value: &Bound<'_, PyAny>, scalar: &Scalar) -> PyResult<bool> {
+fn scalar_matches_py(py: Python<'_>, value: &Bound<'_, PyAny>, scalar: &Scalar) -> PyResult<bool> {
     match &scalar.kind {
         ScalarKind::Null => Ok(value.is_none()),
         ScalarKind::Bool(expected) => value
@@ -721,11 +1023,29 @@ fn scalar_matches_py(value: &Bound<'_, PyAny>, scalar: &Scalar) -> PyResult<bool
                 .unwrap_or_default();
             Ok(bytes.as_bytes() == expected)
         }
-        ScalarKind::Timestamp => Ok(value
-            .str()?
-            .to_string_lossy()
-            .starts_with(scalar.value.trim())),
+        ScalarKind::Timestamp => timestamp_scalar_matches(py, value, &scalar.value),
     }
+}
+
+/// Timestamps are compared component-wise: the source scalar text is parsed
+/// with the parser's timestamp matcher and rebuilt as the datetime the
+/// constructor would produce, so `2001-12-15T02:59:43Z` and
+/// `2001-12-15 02:59:43+00:00` count as the same value instead of never
+/// matching the `str()` spelling (which reformatted untouched timestamps on
+/// every unrelated mutation). Naive and aware datetimes compare unequal, and
+/// the text comparison remains as the fallback when the source does not
+/// parse as a timestamp.
+fn timestamp_scalar_matches(py: Python<'_>, value: &Bound<'_, PyAny>, raw: &str) -> PyResult<bool> {
+    let text = raw.trim();
+    if let Some(parts) = parser::parse_timestamp(text) {
+        // Calendar-invalid source text (e.g. `2001-13-45`) cannot be
+        // constructed; treat it as changed rather than failing the dump.
+        if let Ok(expected) = build_timestamp_value(py, &parts) {
+            return Ok(value.eq(&expected).unwrap_or(false));
+        }
+        return Ok(false);
+    }
+    Ok(value.str()?.to_string_lossy().starts_with(text))
 }
 
 fn find_python_key<'py>(
@@ -734,7 +1054,7 @@ fn find_python_key<'py>(
     key_kind: &NodeKind,
 ) -> PyResult<Option<Bound<'py, PyAny>>> {
     if let NodeKind::Scalar(scalar) = key_kind {
-        if let Ok(expected) = materialize_scalar(py, scalar) {
+        if let Ok(expected) = materialize_scalar(py, scalar, Span::default()) {
             for (key, _) in mapping.iter() {
                 if key.eq(expected.bind(py)).unwrap_or(false) {
                     return Ok(Some(key));
@@ -890,7 +1210,31 @@ fn node_base_indent(document: &ModelDocument, span: Span) -> usize {
         .take_while(|byte| *byte == b' ')
         .count()
 }
+/// Spans are BYTE offsets into the UTF-8 `source`. Every patch is validated
+/// here at the FFI boundary, so an inverted, out-of-bounds, or
+/// non-char-boundary span (for example a Python character offset coming from
+/// an unpatched caller) surfaces as a Serializer-kind native error instead of
+/// a `replace_range` panic. Replacement text arrives as a Rust `String`, so
+/// its UTF-8 validity is guaranteed by the type system.
 fn apply_edits(source: &str, mut edits: Vec<(Span, String)>) -> PyResult<String> {
+    for (span, _) in &edits {
+        if span.start > span.end
+            || span.end > source.len()
+            || !source.is_char_boundary(span.start)
+            || !source.is_char_boundary(span.end)
+        {
+            return Err(native_error(YamlError::new(
+                ErrorKind::Serializer,
+                format!(
+                    "invalid patch span {}..{} for a source of {} bytes",
+                    span.start,
+                    span.end,
+                    source.len()
+                ),
+                *span,
+            )));
+        }
+    }
     edits.sort_by_key(|(span, _)| (span.start, span.end));
     let mut filtered: Vec<(Span, String)> = Vec::new();
     for edit in edits {
@@ -908,15 +1252,99 @@ fn apply_edits(source: &str, mut edits: Vec<(Span, String)>) -> PyResult<String>
     Ok(output)
 }
 
+/// Content test for a `---` document-start marker line, mirroring the
+/// parser's `is_marker`: the line content is exactly `---`, or starts with
+/// `--- ` / `---#`. Lookalikes like `---foo` or `---42` are plain scalars.
+fn is_marker_line(trimmed: &str) -> bool {
+    trimmed.starts_with("---")
+        && matches!(trimmed.as_bytes().get(3), None | Some(b' ') | Some(b'#'))
+}
+
+/// True when the first significant line (skipping blanks, comments, and
+/// `%directive` lines) is a `---` document-start marker.
+fn starts_with_document_marker(text: &str) -> bool {
+    let (_, rest) = split_bom(text);
+    for raw in rest.split_inclusive('\n') {
+        let trimmed = raw.strip_suffix('\n').unwrap_or(raw).trim_end();
+        if trimmed.is_empty() || trimmed.starts_with('#') || trimmed.starts_with('%') {
+            continue;
+        }
+        return is_marker_line(trimmed);
+    }
+    false
+}
+
+/// Prepends a `---` marker after any leading `%directive` lines; inserting
+/// before a `%YAML`/`%TAG` directive would be invalid YAML.
+fn insert_explicit_start(text: &str) -> String {
+    let (bom, rest) = split_bom(text);
+    let mut after_directives = 0usize;
+    for raw in rest.split_inclusive('\n') {
+        let trimmed = raw.strip_suffix('\n').unwrap_or(raw).trim_end();
+        if trimmed.starts_with('%') {
+            after_directives += raw.len();
+        } else {
+            break;
+        }
+    }
+    let mut output = String::with_capacity(text.len() + "---\n".len());
+    output.push_str(bom);
+    output.push_str(&rest[..after_directives]);
+    output.push_str("---\n");
+    output.push_str(&rest[after_directives..]);
+    output
+}
+
+/// Removes a leading `---` marker line (skipping blanks, comments, and
+/// directives before it) and leaves the text untouched when there is none.
 fn remove_explicit_start(source: &str) -> String {
-    let mut lines = source.split_inclusive('\n');
-    let Some(first) = lines.next() else {
+    let (bom, rest) = split_bom(source);
+    let mut prefix = String::from(bom);
+    let mut consumed = 0usize;
+    let mut removed = false;
+    for raw in rest.split_inclusive('\n') {
+        consumed += raw.len();
+        let trimmed = raw.strip_suffix('\n').unwrap_or(raw).trim_end();
+        if trimmed.is_empty() || trimmed.starts_with('#') || trimmed.starts_with('%') {
+            prefix.push_str(raw);
+            continue;
+        }
+        if is_marker_line(trimmed) {
+            removed = true;
+        } else {
+            prefix.push_str(raw);
+        }
+        break;
+    }
+    if !removed {
         return source.to_owned();
-    };
-    if first.trim_end().starts_with("---") {
-        lines.collect()
-    } else {
-        source.to_owned()
+    }
+    prefix.push_str(&rest[consumed..]);
+    prefix
+}
+
+fn split_bom(text: &str) -> (&str, &str) {
+    text.strip_prefix('\u{FEFF}')
+        .map_or(("", text), |rest| ("\u{FEFF}", rest))
+}
+
+fn apply_explicit_start_override(text: String, explicit_start: Option<bool>) -> String {
+    match explicit_start {
+        Some(true) => {
+            if starts_with_document_marker(&text) {
+                text
+            } else {
+                insert_explicit_start(&text)
+            }
+        }
+        Some(false) => {
+            if starts_with_document_marker(&text) {
+                remove_explicit_start(&text)
+            } else {
+                text
+            }
+        }
+        None => text,
     }
 }
 
@@ -995,15 +1423,19 @@ pub fn dump_values(
 }
 
 pub fn extract_emit_config(config: &Bound<'_, PyAny>) -> PyResult<EmitConfig> {
-    let mut result = EmitConfig::default();
-    result.mapping = config.getattr("mapping").and_then(|v| v.extract())?;
-    result.sequence = config.getattr("sequence").and_then(|v| v.extract())?;
-    result.offset = config.getattr("offset").and_then(|v| v.extract())?;
-    result.width = config.getattr("width").and_then(|v| v.extract())?;
-    result.preserve_quotes = config
-        .getattr("preserve_quotes")
-        .and_then(|v| v.extract())?;
-    Ok(result)
+    // `width` and `preserve_quotes` are carried through but the native
+    // emitter currently ignores them: line wrapping would produce folded
+    // plain scalars the parser cannot re-read, and fresh dumps carry no
+    // per-value source quoting to preserve (see EmitConfig).
+    Ok(EmitConfig {
+        mapping: config.getattr("mapping").and_then(|v| v.extract())?,
+        sequence: config.getattr("sequence").and_then(|v| v.extract())?,
+        offset: config.getattr("offset").and_then(|v| v.extract())?,
+        width: config.getattr("width").and_then(|v| v.extract())?,
+        preserve_quotes: config
+            .getattr("preserve_quotes")
+            .and_then(|v| v.extract())?,
+    })
 }
 
 pub fn native_error(error: YamlError) -> PyErr {
@@ -1038,7 +1470,13 @@ impl NativeDocument {
             .documents
             .iter()
             .find(|document| document.root == root_id)
-            .ok_or_else(|| PyValueError::new_err("unknown document root"))?;
+            .ok_or_else(|| {
+                native_error(YamlError::new(
+                    ErrorKind::Composer,
+                    "unknown document root",
+                    Span::default(),
+                ))
+            })?;
         let info = PyDict::new(py);
         info.set_item("root_id", document.root)?;
         info.set_item("span", (document.span.start, document.span.end))?;
@@ -1049,12 +1487,13 @@ impl NativeDocument {
     }
 
     fn describe(&self, py: Python<'_>, node_id: usize) -> PyResult<Py<PyDict>> {
-        let node = self
-            .inner
-            .arena
-            .nodes
-            .get(node_id)
-            .ok_or_else(|| PyValueError::new_err("unknown node id"))?;
+        let node = self.inner.arena.nodes.get(node_id).ok_or_else(|| {
+            native_error(YamlError::new(
+                ErrorKind::Composer,
+                "unknown node id",
+                Span::default(),
+            ))
+        })?;
         let info = PyDict::new(py);
         info.set_item("id", node.id)?;
         info.set_item("span", (node.span.start, node.span.end))?;
@@ -1121,7 +1560,7 @@ impl NativeDocument {
                 info.set_item("alias_target", *target)?;
                 info.set_item(
                     "alias_name",
-                    &self.inner.text[node.value_span.range()].trim_start_matches('*'),
+                    self.inner.text[node.value_span.range()].trim_start_matches('*'),
                 )?;
                 info.set_item("style", py.None())?;
                 info.set_item("chomping", py.None())?;
@@ -1159,9 +1598,7 @@ fn collection_style(source: &str, node: &crate::model::Node) -> &'static str {
 }
 
 fn raw_tag(source: &str, node: &crate::model::Node) -> Option<String> {
-    if node.tag.is_none() {
-        return None;
-    }
+    node.tag.as_ref()?;
     let line_start = source[..node.span.start]
         .rfind('\n')
         .map_or(0, |index| index + 1);
@@ -1200,13 +1637,28 @@ pub fn dump_value_with_patches(
     if let Some(handle) = handle {
         let document = handle.cast::<NativeDocument>()?;
         let native = document.borrow();
+        let model = &native.inner;
+        let node_id = if node_id < model.arena.nodes.len() {
+            node_id
+        } else {
+            usize::MAX
+        };
+        // Without external patches this is exactly a plain dump, so node
+        // identity applies (dumping one document of a stream yields that
+        // document's text only).
+        if external.is_empty() {
+            if !has_dirty(value)? {
+                return clean_dump_text(model, node_id, explicit_start);
+            }
+            return dirty_dump_text(py, value, model, node_id, config, explicit_start);
+        }
         let mut data_edits = Vec::new();
         if has_dirty(value)? {
             collect_edits(
                 py,
                 value,
                 &native.inner,
-                node_id as usize,
+                node_id,
                 config,
                 !external.is_empty(),
                 &mut data_edits,
@@ -1222,10 +1674,8 @@ pub fn dump_value_with_patches(
             }
         }
         let mut text = apply_edits(&native.inner.text, edits)?;
-        if explicit_start == Some(true) && !text.trim_start().starts_with("---") {
-            text.insert_str(0, "---\n");
-        } else if explicit_start == Some(false) && text.trim_start().starts_with("---") {
-            text = remove_explicit_start(&text);
+        if explicit_start.is_some() {
+            text = apply_explicit_start_override(text, explicit_start);
         }
         return Ok(text);
     }
@@ -1233,12 +1683,29 @@ pub fn dump_value_with_patches(
     apply_edits(&base, external)
 }
 
+/// Patches are `(start, end, replacement)` triples whose offsets are BYTE
+/// offsets into the UTF-8 source text, not Python character offsets. Any
+/// malformed patch (wrong shape, non-integer or negative offset) becomes a
+/// Serializer-kind native error, and range/char-boundary validation in
+/// [`apply_edits`] guarantees that a character-offset span from an unpatched
+/// caller produces a clean error, never a panic or silent corruption.
 fn parse_patch_list(patches: &Bound<'_, PyList>) -> PyResult<Vec<(Span, String)>> {
     let mut result = Vec::with_capacity(patches.len());
-    for patch in patches.iter() {
-        let start = patch.get_item(0)?.extract::<usize>()?;
-        let end = patch.get_item(1)?.extract::<usize>()?;
-        let text = patch.get_item(2)?.extract::<String>()?;
+    for (index, patch) in patches.iter().enumerate() {
+        let parsed = (|| -> PyResult<(usize, usize, String)> {
+            Ok((
+                patch.get_item(0)?.extract::<usize>()?,
+                patch.get_item(1)?.extract::<usize>()?,
+                patch.get_item(2)?.extract::<String>()?,
+            ))
+        })();
+        let (start, end, text) = parsed.map_err(|error| {
+            native_error(YamlError::new(
+                ErrorKind::Serializer,
+                format!("invalid patch at index {index}: {error}"),
+                Span::default(),
+            ))
+        })?;
         result.push((Span::new(start, end), text));
     }
     Ok(result)
@@ -1246,4 +1713,462 @@ fn parse_patch_list(patches: &Bound<'_, PyList>) -> PyResult<Vec<(Span, String)>
 
 fn spans_overlap(left: Span, right: Span) -> bool {
     left.start < right.end && right.start < left.end
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use pyo3::exceptions::PyValueError;
+    use std::sync::Arc;
+
+    fn with_python<R>(f: impl FnOnce(Python<'_>) -> R) -> R {
+        Python::initialize();
+        Python::try_attach(f).expect("python interpreter should be available in tests")
+    }
+
+    /// A dict subclass so test values can carry the wrapper attributes
+    /// (`_pyy_handle`, `_pyy_node_id`, ...) without importing the
+    /// `pythonizeyaml` package (whose `__init__` imports the installed
+    /// extension, which is not the one under test).
+    fn wrapper_class(py: Python<'_>) -> Bound<'_, PyAny> {
+        py.eval(c"type('W', (dict,), {})", None, None).unwrap()
+    }
+
+    fn handle_for(py: Python<'_>, source: &str) -> (Py<NativeDocument>, Arc<ModelDocument>) {
+        let model = Arc::new(parser::parse(source).unwrap());
+        let handle = Py::new(
+            py,
+            NativeDocument {
+                inner: model.clone(),
+            },
+        )
+        .unwrap();
+        (handle, model)
+    }
+
+    fn mapping_node_id(model: &ModelDocument, root: NodeId, key: &str) -> NodeId {
+        let NodeKind::Mapping(entries) = &model.arena.node(root).kind else {
+            panic!("expected a mapping root");
+        };
+        entries
+            .iter()
+            .find(|entry| {
+                matches!(&model.arena.node(entry.key).kind,
+                NodeKind::Scalar(scalar) if scalar.value == key)
+            })
+            .map(|entry| entry.value)
+            .unwrap_or_else(|| panic!("missing key {key}"))
+    }
+
+    fn assert_native_error(error: &PyErr, kind: i64, needle: &str) {
+        Python::attach(|py| {
+            assert!(
+                !error.is_instance_of::<PyValueError>(py),
+                "raw ValueError leaked: {error}"
+            );
+            let args = error.value(py).getattr("args").unwrap();
+            let error_kind: i64 = args.get_item(0).unwrap().extract().unwrap();
+            let problem: String = args.get_item(1).unwrap().extract().unwrap();
+            assert_eq!(error_kind, kind, "problem was {problem:?}");
+            assert!(
+                problem.contains(needle),
+                "problem {problem:?} missing {needle:?}"
+            );
+        });
+    }
+
+    // --- Item 8: dump_value honors node identity. ---
+
+    #[test]
+    fn clean_sub_node_dump_returns_only_that_node() {
+        with_python(|py| {
+            let (handle, model) = handle_for(py, "a:\n  b: 1\n");
+            let inner_id = mapping_node_id(&model, model.documents[0].root, "a");
+            let class = wrapper_class(py);
+            let inner = class.call0().unwrap();
+            inner.cast::<PyDict>().unwrap().set_item("b", 1).unwrap();
+            inner.setattr("_pyy_handle", handle).unwrap();
+            inner.setattr("_pyy_node_id", inner_id).unwrap();
+            let text = dump_value(py, inner.as_any(), EmitConfig::default(), None).unwrap();
+            assert_eq!(text, "b: 1\n");
+        });
+    }
+
+    #[test]
+    fn clean_document_dump_returns_that_document_of_a_stream() {
+        with_python(|py| {
+            let (values, handle) = parse_all_values(py, "a: 1\n---\nb: 2\n", true).unwrap();
+            let roots: Vec<NodeId> = handle
+                .borrow(py)
+                .inner
+                .documents
+                .iter()
+                .map(|document| document.root)
+                .collect();
+            let class = wrapper_class(py);
+            let mut wrappers = Vec::new();
+            for (index, root) in roots.iter().enumerate() {
+                let wrapper = class.call0().unwrap();
+                let source = values.bind(py).get_item(index).unwrap();
+                for (key, value) in source.cast::<PyDict>().unwrap().iter() {
+                    wrapper
+                        .cast::<PyDict>()
+                        .unwrap()
+                        .set_item(key, value)
+                        .unwrap();
+                }
+                wrapper
+                    .setattr("_pyy_handle", handle.clone_ref(py))
+                    .unwrap();
+                wrapper.setattr("_pyy_node_id", *root).unwrap();
+                wrappers.push(wrapper);
+            }
+            let first = dump_value(py, wrappers[0].as_any(), EmitConfig::default(), None).unwrap();
+            assert_eq!(first, "a: 1\n");
+            let second = dump_value(py, wrappers[1].as_any(), EmitConfig::default(), None).unwrap();
+            assert_eq!(second, "---\nb: 2\n");
+            // explicit_start=False strips only that document's marker.
+            let stripped =
+                dump_value(py, wrappers[1].as_any(), EmitConfig::default(), Some(false)).unwrap();
+            assert_eq!(stripped, "b: 2\n");
+        });
+    }
+
+    #[test]
+    fn dirty_sub_node_dump_re_emits_only_that_node() {
+        with_python(|py| {
+            let (handle, model) = handle_for(py, "a:\n  b: 1\n");
+            let inner_id = mapping_node_id(&model, model.documents[0].root, "a");
+            let class = wrapper_class(py);
+            let inner = class.call0().unwrap();
+            let dict = inner.cast::<PyDict>().unwrap();
+            dict.set_item("b", 2).unwrap();
+            inner.setattr("_pyy_handle", handle).unwrap();
+            inner.setattr("_pyy_node_id", inner_id).unwrap();
+            inner.setattr("_pyy_dirty", true).unwrap();
+            let text = dump_value(py, inner.as_any(), EmitConfig::default(), None).unwrap();
+            assert_eq!(text, "b: 2\n");
+        });
+    }
+
+    #[test]
+    fn root_dump_keeps_the_whole_document() {
+        with_python(|py| {
+            let source = "a:\n  b: 1\n";
+            let (handle, model) = handle_for(py, source);
+            let class = wrapper_class(py);
+            let root_wrapper = class.call0().unwrap();
+            let inner = class.call0().unwrap();
+            inner.cast::<PyDict>().unwrap().set_item("b", 1).unwrap();
+            root_wrapper
+                .cast::<PyDict>()
+                .unwrap()
+                .set_item("a", inner)
+                .unwrap();
+            root_wrapper.setattr("_pyy_handle", handle).unwrap();
+            root_wrapper
+                .setattr("_pyy_node_id", model.documents[0].root)
+                .unwrap();
+            let text = dump_value(py, root_wrapper.as_any(), EmitConfig::default(), None).unwrap();
+            assert_eq!(text, source);
+        });
+    }
+
+    // --- Item 9: document-marker semantics. ---
+
+    #[test]
+    fn marker_lookalikes_are_not_explicit_starts() {
+        assert_eq!(remove_explicit_start("---foo\n"), "---foo\n");
+        assert_eq!(remove_explicit_start("---42\n"), "---42\n");
+        assert!(!starts_with_document_marker("---foo\n"));
+        assert!(starts_with_document_marker("---\na: 1\n"));
+        assert!(starts_with_document_marker("--- # c\na: 1\n"));
+        assert!(starts_with_document_marker("%YAML 1.2\n---\na: 1\n"));
+        assert!(!starts_with_document_marker("a: 1\n"));
+    }
+
+    #[test]
+    fn explicit_start_removal_keeps_directives_and_content() {
+        assert_eq!(remove_explicit_start("---\na: 1\n"), "a: 1\n");
+        assert_eq!(
+            remove_explicit_start("%YAML 1.2\n---\na: 1\n"),
+            "%YAML 1.2\na: 1\n"
+        );
+        assert_eq!(remove_explicit_start("--- # c\na: 1\n"), "a: 1\n");
+        assert_eq!(remove_explicit_start("a: 1\n"), "a: 1\n");
+    }
+
+    #[test]
+    fn explicit_start_insertion_goes_after_directives() {
+        assert_eq!(
+            insert_explicit_start("%YAML 1.2\na: 1\n"),
+            "%YAML 1.2\n---\na: 1\n"
+        );
+        assert_eq!(insert_explicit_start("a: 1\n"), "---\na: 1\n");
+        assert_eq!(
+            apply_explicit_start_override("---\na: 1\n".to_owned(), Some(true)),
+            "---\na: 1\n"
+        );
+    }
+
+    #[test]
+    fn explicit_start_override_round_trips() {
+        with_python(|py| {
+            let (handle, model) = handle_for(py, "%YAML 1.2\n---\na: 1\n");
+            let class = wrapper_class(py);
+            let wrapper = class.call0().unwrap();
+            wrapper.cast::<PyDict>().unwrap().set_item("a", 1).unwrap();
+            wrapper.setattr("_pyy_handle", handle).unwrap();
+            wrapper
+                .setattr("_pyy_node_id", model.documents[0].root)
+                .unwrap();
+            let text = dump_value(py, wrapper.as_any(), EmitConfig::default(), Some(true)).unwrap();
+            assert_eq!(text, "%YAML 1.2\n---\na: 1\n");
+        });
+    }
+
+    // --- Item 10: alias to the enclosing anchor. ---
+
+    #[test]
+    fn alias_to_enclosing_anchor_is_self_referential() {
+        with_python(|py| {
+            let (value, _handle) = parse_value(py, "a: &x\n  b: *x\n", true).unwrap();
+            let root = value.bind(py).cast::<PyDict>().unwrap();
+            let inner = root.get_item("a").unwrap().unwrap();
+            let inner_dict = inner.cast::<PyDict>().unwrap();
+            let b = inner_dict.get_item("b").unwrap().unwrap();
+            assert!(!b.is_none(), "alias to enclosing anchor materialized None");
+            assert_eq!(
+                b.as_ptr(),
+                inner.as_ptr(),
+                "alias did not share the anchor object"
+            );
+        });
+    }
+
+    #[test]
+    fn regular_block_and_flow_aliases_still_resolve() {
+        with_python(|py| {
+            let (value, _handle) = parse_value(py, "a: &x 1\nb: *x\n", true).unwrap();
+            let root = value.bind(py).cast::<PyDict>().unwrap();
+            assert_eq!(
+                root.get_item("b")
+                    .unwrap()
+                    .unwrap()
+                    .extract::<i64>()
+                    .unwrap(),
+                1
+            );
+            let (value, _handle) = parse_value(py, "items: [&x {k: 1}, *x]\n", true).unwrap();
+            let root = value.bind(py).cast::<PyDict>().unwrap();
+            let items_value = root.get_item("items").unwrap().unwrap();
+            let items = items_value.cast::<PyList>().unwrap();
+            let first = items.get_item(0).unwrap();
+            let second = items.get_item(1).unwrap();
+            assert!(second.is(&first));
+        });
+    }
+
+    // --- Item 11: untouched timestamps stay byte-identical. ---
+
+    #[test]
+    fn unrelated_mutation_keeps_timestamp_text() {
+        with_python(|py| {
+            let source = "ts: 2001-12-15T02:59:43Z\nother: 1\n";
+            let (handle, model) = handle_for(py, source);
+            let class = wrapper_class(py);
+            let wrapper = class.call0().unwrap();
+            let dict = wrapper.cast::<PyDict>().unwrap();
+            let datetime = py
+                .import("datetime")
+                .unwrap()
+                .getattr("datetime")
+                .unwrap()
+                .getattr("fromisoformat")
+                .unwrap()
+                .call1(("2001-12-15T02:59:43+00:00",))
+                .unwrap();
+            dict.set_item("ts", datetime).unwrap();
+            dict.set_item("other", 2).unwrap();
+            wrapper.setattr("_pyy_handle", handle).unwrap();
+            wrapper
+                .setattr("_pyy_node_id", model.documents[0].root)
+                .unwrap();
+            wrapper.setattr("_pyy_dirty", true).unwrap();
+            let text = dump_value(py, wrapper.as_any(), EmitConfig::default(), None).unwrap();
+            assert_eq!(text, "ts: 2001-12-15T02:59:43Z\nother: 2\n");
+        });
+    }
+
+    #[test]
+    fn changed_timestamp_values_are_updated() {
+        with_python(|py| {
+            let source = "ts: 2001-12-15T02:59:43Z\n";
+            let (handle, model) = handle_for(py, source);
+            let class = wrapper_class(py);
+            let wrapper = class.call0().unwrap();
+            let dict = wrapper.cast::<PyDict>().unwrap();
+            let datetime = py
+                .import("datetime")
+                .unwrap()
+                .getattr("datetime")
+                .unwrap()
+                .getattr("fromisoformat")
+                .unwrap()
+                .call1(("2001-12-15T02:59:44+00:00",))
+                .unwrap();
+            dict.set_item("ts", datetime).unwrap();
+            wrapper.setattr("_pyy_handle", handle).unwrap();
+            wrapper
+                .setattr("_pyy_node_id", model.documents[0].root)
+                .unwrap();
+            wrapper.setattr("_pyy_dirty", true).unwrap();
+            let text = dump_value(py, wrapper.as_any(), EmitConfig::default(), None).unwrap();
+            assert!(text.contains("02:59:44"), "got {text:?}");
+        });
+    }
+
+    // --- Item 12: unhashable keys are Constructor errors. ---
+
+    #[test]
+    fn unhashable_mapping_key_is_a_constructor_error() {
+        with_python(|py| {
+            let error = parse_value(py, "{[a]: b}\n", true).unwrap_err();
+            assert_native_error(&error, 3, "unhashable key");
+        });
+    }
+
+    #[test]
+    fn unhashable_set_member_is_a_constructor_error() {
+        with_python(|py| {
+            let error = parse_value(py, "!!set {[a]: null}\n", true).unwrap_err();
+            assert_native_error(&error, 3, "unhashable key");
+        });
+    }
+
+    // --- Item 13: constructor errors go through the native funnel. ---
+
+    #[test]
+    fn invalid_timestamp_is_a_constructor_error() {
+        with_python(|py| {
+            let error = parse_value(py, "!!timestamp not-a-date\n", true).unwrap_err();
+            assert_native_error(&error, 3, "timestamp");
+        });
+    }
+
+    #[test]
+    fn invalid_binary_is_a_constructor_error() {
+        with_python(|py| {
+            let error = parse_value(py, "!!binary \"!!!\"\n", true).unwrap_err();
+            assert_native_error(&error, 3, "binary");
+        });
+    }
+
+    #[test]
+    fn invalid_float_is_a_constructor_error() {
+        with_python(|py| {
+            let error = parse_value(py, "!!float not-a-float\n", true).unwrap_err();
+            assert_native_error(&error, 3, "float");
+        });
+    }
+
+    // --- Item 6: patch spans are validated, never panicking. ---
+
+    #[test]
+    fn mid_character_patch_span_is_a_serializer_error() {
+        with_python(|py| {
+            let (handle, model) = handle_for(py, "héllo\n");
+            let patches = PyList::new(py, [py.eval(c"[1, 2, 'X']", None, None).unwrap()]).unwrap();
+            let none = py.None().into_bound(py);
+            let error = dump_value_with_patches(
+                py,
+                &none,
+                EmitConfig::default(),
+                None,
+                &patches,
+                Some(handle.bind(py)),
+                Some(model.documents[0].root),
+            )
+            .unwrap_err();
+            assert_native_error(&error, 6, "invalid patch span");
+        });
+    }
+
+    #[test]
+    fn out_of_bounds_and_inverted_patch_spans_are_errors() {
+        with_python(|py| {
+            let (handle, model) = handle_for(py, "abc\n");
+            for patch in [(0usize, 999usize, "X"), (3usize, 1usize, "X")] {
+                let triple = format!("[{}, {}, 'X']", patch.0, patch.1);
+                let patch_expr = std::ffi::CString::new(triple).unwrap();
+                let patches =
+                    PyList::new(py, [py.eval(patch_expr.as_c_str(), None, None).unwrap()]).unwrap();
+                let none = py.None().into_bound(py);
+                let result = dump_value_with_patches(
+                    py,
+                    &none,
+                    EmitConfig::default(),
+                    None,
+                    &patches,
+                    Some(handle.bind(py)),
+                    Some(model.documents[0].root),
+                );
+                let error = result.unwrap_err();
+                assert_native_error(&error, 6, "invalid patch span");
+            }
+        });
+    }
+
+    #[test]
+    fn negative_patch_offset_is_a_serializer_error() {
+        with_python(|py| {
+            let (handle, model) = handle_for(py, "abc\n");
+            let patch = py.eval(c"[-1, 1, 'X']", None, None).unwrap();
+            let patches = PyList::new(py, [patch]).unwrap();
+            let none = py.None().into_bound(py);
+            let error = dump_value_with_patches(
+                py,
+                &none,
+                EmitConfig::default(),
+                None,
+                &patches,
+                Some(handle.bind(py)),
+                Some(model.documents[0].root),
+            )
+            .unwrap_err();
+            assert_native_error(&error, 6, "invalid patch");
+        });
+    }
+
+    #[test]
+    fn valid_patches_still_apply() {
+        with_python(|py| {
+            let (handle, model) = handle_for(py, "héllo\n");
+            let patches = PyList::new(py, [py.eval(c"[0, 1, 'H']", None, None).unwrap()]).unwrap();
+            let none = py.None().into_bound(py);
+            let text = dump_value_with_patches(
+                py,
+                &none,
+                EmitConfig::default(),
+                None,
+                &patches,
+                Some(handle.bind(py)),
+                Some(model.documents[0].root),
+            )
+            .unwrap();
+            assert_eq!(text, "Héllo\n");
+        });
+    }
+
+    #[test]
+    fn unknown_node_ids_are_composer_errors() {
+        with_python(|py| {
+            let (handle, _model) = handle_for(py, "a: 1\n");
+            let bound = handle.bind(py);
+            let error = bound.borrow().describe(py, 9999).unwrap_err();
+            assert_native_error(&error, 2, "unknown node id");
+            let error = bound.borrow().document_info(py, 9999).unwrap_err();
+            assert_native_error(&error, 2, "unknown document root");
+        });
+    }
 }

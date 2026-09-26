@@ -16,7 +16,7 @@ class Document(data, *, handle=None, root_id=-1, source='', config=None)
 - **source** —— 原始 YAML 文本,用于逐字节精确回放与局部补丁。给定 *handle* 时会被忽略。
 - **config** —— `IndentConfig`,作为没有源布局的节点的输出回退配置。默认为 `DEFAULT_CONFIG`。
 
-`Document` 还实现了其根值对应的容器协议:`len()`、迭代、`document[key]` 与 `document[key] = value`(分别委托给 `at()`/`set()`),映射根还支持 `keys()`、`items()` 与 `values()`;标量根可通过 `str()`、`int()`、`float()`、`complex()` 与 `bool()` 进行转换。
+`Document` 还实现了其根值对应的容器协议:`len()`、迭代、`document[key]` 与 `document[key] = value`(分别委托给 `at()`/`set()`),映射根还支持 `keys()`、`items()` 与 `values()`——其中 `items()` 与 `values()` 会把别名条目穿透读取为其目标值。`str(document)` 对标量根返回被包装的标量,对容器根返回导出的 YAML 文本;`copy.deepcopy(document)` 返回完全独立的副本(带句柄的文档会从其导出文本重新加载,保留逐字节一致的格式)。标量根可通过 `str()`、`int()`、`float()`、`complex()` 与 `bool()` 进行转换。
 
 ### `Document.new(root=None, *, config=None)`
 
@@ -28,7 +28,7 @@ class Document(data, *, handle=None, root_id=-1, source='', config=None)
 
 ### `Document.data`
 
-文档根值。`Document.value` 的只读孪生属性,便于在就地修改返回容器的调用点上表达意图。
+文档根值。`Document.value` 的只读孪生属性,便于在就地修改返回容器的调用点上表达意图。通过 `alias()` 创建的别名条目会穿透读取为目标值的当前状态:只要注册了任何别名,返回的映射/序列就是一份浅层解析副本而非原容器;没有别名时,返回的就是底层数据对象本身。
 
 ### `Document.root`
 
@@ -56,7 +56,7 @@ class Document(data, *, handle=None, root_id=-1, source='', config=None)
 
 - **\\*path** —— 一个或多个路径部分:映射键或序列索引,由外向内。也可以只传一个元组或列表代替多个参数。
 
-路径不存在时抛出 `PathError`。别名节点会解析为目标值。
+路径不存在时抛出 `PathError`。别名节点会解析为目标值:通过 `alias()` 创建的条目穿透读取为目标值的当前状态,而源自源文件的别名与其目标共享同一个 Python 对象。
 
 ```python
 >>> document = yaml.load("service:\n  ports: [8080, 8081]\n")
@@ -111,7 +111,7 @@ NodeRef(path=('build', 'command'))
 
 ### `Document.alias(*path, target, anchor=None)`
 
-把 *path* 处的节点变成 *target* 的别名。
+把 *path* 处的节点变成 *target* 的别名。*path* 既可以已经存在(其当前值成为别名),也可以是全新路径——缺失的中间映射键会被创建,新条目以别名形式持有目标值。
 
 - **\\*path** —— 要成为别名的节点的路径部分。
 - **target** —— 同一文档中的 `NodeRef`,或指向锚点源的路径元组。跨文档取别名会抛出 `AliasError`。
@@ -159,11 +159,11 @@ DocumentScalar(data, *, ...)
 
 ## `NodeRef`
 
-`Document` 中某个节点的稳定路径视图,由 `Document.node()`、`Document.set()`、`Document.append()`、`Document.insert()` 与 `Document.alias()` 返回。属性赋值会先按节点的值校验请求的样式,再进行修改。
+`Document` 中某个节点的稳定视图,由 `Document.node()`、`Document.set()`、`Document.append()`、`Document.insert()` 与 `Document.alias()` 返回。视图按节点身份解析,而不是冻结的路径:当列表插入或删除使兄弟节点位移后,访问该 ref 仍会到达同一个节点;若 ref 指向的节点已被移除,再访问会抛出 `PathError`。在 Python 中新建的节点(没有原生节点 id)则回退为创建 ref 时使用的路径。属性赋值会先按节点的值校验请求的样式,再进行修改。
 
 ### `NodeRef.path`
 
-标识该节点的路径部分 `tuple`。
+标识该节点的路径部分 `tuple`——即该节点*当前*的路径,每次访问都按身份重新解析。
 
 ### `NodeRef.value`
 
@@ -267,12 +267,13 @@ DocumentStream(documents=(), *, source='', handle=None)
 
 移除并返回 *index* 处的 `Document`。
 
-### `DocumentStream.dump(stream=None, *, config=None, explicit_start=True)`
+### `DocumentStream.dump(stream=None, *, config=None, explicit_start=None, explicit_end=None)`
 
 输出整个流。
 
 - **stream** —— 可写流,或 `None` 以返回文本。
 - **config** —— (`IndentConfig | None`)针对被修改文档的输出覆盖。
-- **explicit_start** —— 是否在每个文档前输出 `---` 标记;多文档流默认为 `True`。
+- **explicit_start** —— (`bool | None`)控制起始 `---` 标记。`None`(默认)保留每个文档自身的标记,因此未经修改的流会精确回放源文本;`True` 补上缺失的标记,`False` 去掉流的起始标记。
+- **explicit_end** —— (`bool | None`)以相同语义控制结尾 `...` 标记;省略时每个文档保留自己的标记。
 
 未经修改的流会精确回放源文本。

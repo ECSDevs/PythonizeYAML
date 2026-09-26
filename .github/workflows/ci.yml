@@ -5,24 +5,89 @@ on:
   pull_request:
   workflow_dispatch:
 
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
+  version-consistency:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Assert pyproject.toml, Cargo.toml, and __init__.py versions match
+        run: |
+          python - <<'PY'
+          import pathlib
+          import re
+          import sys
+
+          def extract(path, pattern):
+              match = re.search(pattern, pathlib.Path(path).read_text(encoding="utf-8"), re.M)
+              if not match:
+                  sys.exit(f"could not find version in {path}")
+              return match.group(1)
+
+          versions = {
+              "pyproject.toml": extract("pyproject.toml", r'^version\s*=\s*"([^"]+)"'),
+              "rust/Cargo.toml": extract("rust/Cargo.toml", r'^version\s*=\s*"([^"]+)"'),
+              "src/pythonizeyaml/__init__.py": extract(
+                  "src/pythonizeyaml/__init__.py", r'^__version__\s*=\s*"([^"]+)"'
+              ),
+          }
+          unique = set(versions.values())
+          for path, version in versions.items():
+              print(f"{path}: {version}")
+          if len(unique) != 1:
+              sys.exit(f"version mismatch: {versions}")
+          PY
+
   test:
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.10", "3.14"]
+        python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: ${{ matrix.python-version }}
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
       - run: python -m pip install poetry maturin
       - run: poetry install --with dev
       - run: poetry run maturin develop
-      - run: cargo test --manifest-path rust/Cargo.toml
       - run: poetry run pytest -q
+      - run: poetry run python smoke_check.py
+
+  rust:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          components: rustfmt, clippy
+      - run: cargo test --manifest-path rust/Cargo.toml
+      - run: cargo fmt --manifest-path rust/Cargo.toml --check
+      - name: cargo clippy
+        # TODO: make blocking once the 15 preexisting clippy warnings in
+        # rust/src are fixed (as of clippy 1.98, stable).
+        continue-on-error: true
+        run: cargo clippy --manifest-path rust/Cargo.toml --all-targets
+
+  msrv:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          toolchain: "1.83.0"
+      # `+1.83.0` beats the repo's rust-toolchain.toml (channel = stable).
+      - run: cargo +1.83.0 check --manifest-path rust/Cargo.toml
 
   wheels:
     strategy:
@@ -31,23 +96,60 @@ jobs:
         include:
           - os: ubuntu-latest
             target: x86_64
+          - os: ubuntu-latest
+            target: aarch64
           - os: windows-latest
             target: x86_64
           - os: macos-14
             target: aarch64
+          - os: macos-15-intel
+            target: x86_64
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: "3.11"
-      - uses: PyO3/maturin-action@v1
+      - uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b # v1
         with:
           command: build
           args: --release --out dist
           target: ${{ matrix.target }}
           manylinux: auto
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: wheels-${{ matrix.os }}-${{ matrix.target }}
           path: dist
+
+  test-wheels:
+    needs: wheels
+    # The linux aarch64 wheel is cross-compiled and has no matching hosted
+    # runner, so it is not exercised here (the wheel build itself ran in QEMU).
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            artifact: wheels-ubuntu-latest-x86_64
+          - os: windows-latest
+            artifact: wheels-windows-latest-x86_64
+          - os: macos-14
+            artifact: wheels-macos-14-aarch64
+          - os: macos-15-intel
+            artifact: wheels-macos-15-intel-x86_64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.12"
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: dist
+      - name: Install built wheel
+        # --no-index guarantees the wheel under test is imported, not PyPI.
+        run: python -m pip install --no-index --find-links dist pythonizeyaml
+      - run: python -m pip install pytest
+      # src/ layout: the tests import the installed wheel, not the checkout.
+      - run: python -m pytest tests/ -q

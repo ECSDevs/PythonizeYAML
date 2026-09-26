@@ -42,6 +42,10 @@ EXPECTED_FIXTURES = {
     "rich.yaml",
     "plain_types.yaml",
     "no_trailing_newline.yaml",
+    "multiline_plain.yaml",
+    "multiline_flow.yaml",
+    "multiline_quoted.yaml",
+    "multiline_structure.yaml",
 }
 
 
@@ -67,14 +71,14 @@ def test_a_file_with_a_trailing_newline_keeps_it_that_way(read_fixture):
 
 
 def test_fixture_text_is_preserved_byte_for_byte(fixture_path, fixture_text):
-    documents = py.load_all(fixture_text)
+    documents = list(py.load_all(fixture_text))
     assert py.dump_all(documents) == fixture_text
     if len(documents) == 1:
         assert py.dump(py.load(fixture_text)) == fixture_text
 
 
 def test_round_trip_to_a_stream_is_identical(fixture_path, fixture_text):
-    documents = py.load_all(fixture_text)
+    documents = list(py.load_all(fixture_text))
     stream = io.StringIO()
     assert py.dump_all(documents, stream=stream) is None
     assert stream.getvalue() == fixture_text

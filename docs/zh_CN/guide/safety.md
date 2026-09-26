@@ -15,7 +15,7 @@ assert manifest == {"steps": [{"run": "python -m pytest"}]}
 
 形如 `!!python/object/apply:os.system` 的输入会抛出 `ConstructorError`;不会有任何东西被执行。这使 `safe_load` 成为跨信任边界数据的默认选择。
 
-对应的 `safe_dump()` 与 `safe_dump_all()` 只输出普通 YAML 类型,遇到 `Tagged` 值会以 `RepresenterError` 拒绝。
+对应的 `safe_dump()` 与 `safe_dump_all()` 只输出普通 YAML 类型:`Tagged` 值,以及 `Document` 中任何位置出现的自定义应用标签,都会以 `RepresenterError` 拒绝。
 
 ## 2. 校验器草图
 
@@ -62,7 +62,24 @@ assert yaml.dump(value) == "job: !runner {name: tests}\n"
 
 `Tagged` 对象会原样往返,因此工具可以在不理解这些标签的情况下编辑这类文件——文件也不会丢掉它们。
 
-## 4. 选择引擎
+如果你想要的是普通 Python 数据而非可编辑文档,但输入可能携带应用标签,`full_load()` 会返回普通 `dict`/`list` 数据,并把未知标签包装为惰性的 `Tagged` 值。`unsafe_load()` 是 `full_load()` 的正式文档别名:与本库的每个加载器一样,它从不构造任意 Python 对象,这个名字只是兼容性写法,并不带来额外风险。
+
+## 4. 解析器加固
+
+格式错误的输入会安全而精确地失败:
+
+- 嵌套深度超过解析器 128 层上限的输入会抛出 `ParserError`("maximum nesting depth exceeded"),而不是耗尽调用栈。
+- 双引号标量中的非法转义序列——未知转义如 `\q`,或畸形十六进制转义如 `\xZZ`——会抛出 `ScannerError`。
+- 失败绝不会以内部 panic 或原生崩溃的形式暴露:每个错误都会以文档记载的 `YAMLError` 子类返回,解析侧的错误还带有源位置。
+
+```python
+try:
+    yaml.safe_load('msg: "bad \\q escape"\n')
+except yaml.ScannerError as error:
+    print(error)  # found unknown escape character 'q' ...
+```
+
+## 5. 选择引擎
 
 - 自己拥有并编辑的配置:`yaml.load()` —— 你会得到文档、样式与注释。
 - 来自外部的数据:`yaml.safe_load()` —— 普通值,标签被拒绝。

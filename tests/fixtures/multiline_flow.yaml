@@ -1,0 +1,18 @@
+# Multi-line flow collections.
+list: [
+  1,
+  2,
+  3]
+map: {
+  a: 1,
+  b: two
+}
+nested: [
+  1,
+  [2,
+   3],
+  {k: v}]
+folded plain: [one
+  two,
+  three]
+after: done

@@ -45,9 +45,11 @@ Load every YAML document from *stream*.
 - **stream** – the YAML stream to read.
 - **Loader** – accepted for PyYAML migration compatibility and ignored.
 
-Returns a `list` of `Document` objects, one per document in the stream, in
-source order. Raises the same errors as `load()`. Use `load_documents()`
-when the ordered `DocumentStream` wrapper is preferred.
+Returns a lazy generator of `Document` objects, one per document in the
+stream, in source order. Like PyYAML's `load_all()`, the stream is read and
+parsed on the first iteration and the generator can be consumed once. Raises
+the same errors as `load()`. Use `load_documents()` when the ordered
+`DocumentStream` wrapper is preferred.
 
 ```python
 >>> for doc in yaml.load_all("---\nname: one\n---\nname: two\n"):
@@ -59,16 +61,18 @@ when the ordered `DocumentStream` wrapper is preferred.
 ## `dump()`
 
 ```python
-dump(data, stream=None, *, indent=None, width=None, explicit_start=None,
-     allow_unicode=None, default_flow_style=None, sort_keys=None,
-     encoding=None, Dumper=None)
+dump(data, stream=None, Dumper=None, *, indent=None, width=None,
+     explicit_start=None, explicit_end=None, allow_unicode=None,
+     default_flow_style=None, sort_keys=None, encoding=None)
 ```
 
 Serialize *data* to YAML while preserving its original layout.
 
 - **data** – plain Python data, or a `Document`. For a `Document`, `dump()`
   delegates to `Document.dump()`: an unchanged document replays its source
-  text exactly, and modified nodes are patched locally.
+  text exactly, and modified nodes are patched locally. For a round-trip
+  container read out of a document (for example `document["outer"]`), only
+  that node's own YAML is emitted, with its source layout.
 - **stream** – a writable stream. When `None` (the default), the YAML text is
   returned as a `str`; otherwise the text is written to *stream* and `None`
   is returned.
@@ -79,9 +83,12 @@ Serialize *data* to YAML while preserving its original layout.
 - **width** – (`int | None`) the preferred maximum line width used when the
   emitter must choose a layout for new data.
 - **explicit_start** – (`bool | None`) emit a leading `---` document marker.
-- **allow_unicode**, **default_flow_style**, **sort_keys**, **encoding**,
-  **Dumper** – accepted for PyYAML migration compatibility and ignored,
+- **explicit_end** – (`bool | None`) emit a trailing `...` document marker.
+- **allow_unicode**, **default_flow_style**, **sort_keys**,
+  **encoding** – accepted for PyYAML migration compatibility and ignored,
   because source layout and Unicode output are always preserved.
+- **Dumper** – occupies PyYAML's third positional slot for signature parity
+  and is ignored.
 
 Any other keyword argument raises `TypeError`.
 
@@ -93,9 +100,9 @@ Any other keyword argument raises `TypeError`.
 ## `dump_all()`
 
 ```python
-dump_all(documents, stream=None, *, indent=None, width=None,
-         explicit_start=None, allow_unicode=None, default_flow_style=None,
-         sort_keys=None, encoding=None, Dumper=None)
+dump_all(documents, stream=None, Dumper=None, *, indent=None, width=None,
+         explicit_start=None, explicit_end=None, allow_unicode=None,
+         default_flow_style=None, sort_keys=None, encoding=None)
 ```
 
 Serialize an iterable of documents as a multi-document stream, separated by
@@ -108,7 +115,8 @@ Serialize an iterable of documents as a multi-document stream, separated by
 - remaining keyword arguments – same as `dump()`.
 
 Generators are consumed before emission. Without `explicit_start`, the
-first document is written without a leading marker.
+first document is written without a leading marker. With `explicit_end`,
+every document is terminated with `...`.
 
 ```python
 >>> yaml.dump_all([{"name": "one"}, {"name": "two"}], explicit_start=True)
@@ -145,22 +153,67 @@ Load every document with the safe engine.
 
 - **stream** – the YAML stream to read.
 
-Returns a `list` of plain Python values. Tag restrictions are the same as
-`safe_load()`.
+Returns a lazy generator of plain Python values — the stream is read and
+parsed on the first iteration and the generator can be consumed once. Tag
+restrictions are the same as `safe_load()`.
+
+## `full_load()`
+
+```python
+full_load(stream)
+```
+
+Load the first document as plain data, tolerating unknown tags.
+
+- **stream** – the YAML source to read.
+
+Returns ordinary `dict`, `list`, and scalar values without document
+wrappers. Unlike `safe_load()`, unknown application tags do not raise: they
+come back as inert `Tagged` values. The library never constructs arbitrary
+Python objects from tags — `!!python/object/apply:...` and friends are
+wrapped like any other unknown tag, never executed.
+
+```python
+>>> yaml.full_load("job: !runner {name: tests}\n")
+{'job': Tagged(tag='!runner', value={'name': 'tests'})}
+```
+
+## `full_load_all()`
+
+```python
+full_load_all(stream)
+```
+
+Load every document as plain data, tolerating unknown tags. See
+`full_load()` for the tag handling. Returns a lazy generator.
+
+## `unsafe_load()` and `unsafe_load_all()`
+
+```python
+unsafe_load(stream)
+unsafe_load_all(stream)
+```
+
+Documented PyYAML-signature aliases of `full_load()` and `full_load_all()`.
+PyYAML's `unsafe_load` constructs arbitrary Python objects from tags; this
+library intentionally never does that, so these aliases are no more
+dangerous than `full_load()` and exist for compatibility only.
 
 ## `safe_dump()`
 
 ```python
-safe_dump(data, stream=None, *, indent=None, width=None, explicit_start=None,
-          allow_unicode=None, default_flow_style=None, sort_keys=None,
-          encoding=None, Dumper=None)
+safe_dump(data, stream=None, Dumper=None, *, indent=None, width=None,
+          explicit_start=None, explicit_end=None, allow_unicode=None,
+          default_flow_style=None, sort_keys=None, encoding=None)
 ```
 
 Serialize *data* using the safe representation; only plain YAML types are
 emitted.
 
 - **data** – plain Python data. `Tagged` values anywhere in *data* raise
-  `RepresenterError`.
+  `RepresenterError`, as do custom application tags (`!runner`-style) found
+  anywhere in a `Document`; standard `!!`-prefixed tags that resolve to
+  plain values stay allowed.
 - **stream** – same contract as `dump()`.
 - remaining keyword arguments – same as `dump()`.
 
@@ -172,10 +225,9 @@ emitted.
 ## `safe_dump_all()`
 
 ```python
-safe_dump_all(documents, stream=None, *, indent=None, width=None,
-              explicit_start=None, allow_unicode=None,
-              default_flow_style=None, sort_keys=None, encoding=None,
-              Dumper=None)
+safe_dump_all(documents, stream=None, Dumper=None, *, indent=None, width=None,
+              explicit_start=None, explicit_end=None, allow_unicode=None,
+              default_flow_style=None, sort_keys=None, encoding=None)
 ```
 
 Serialize an iterable of documents with the safe representation.
@@ -221,12 +273,12 @@ Load the first document; returns a `Document` (plain values for `SafeYAML`).
 Load every document; returns a `list` of `Document` objects (plain values for
 `SafeYAML`).
 
-### `YAML.dump(data, stream=None, *, config=None, explicit_start=None)`
+### `YAML.dump(data, stream=None, *, config=None, explicit_start=None, explicit_end=None)`
 
 Serialize *data*; accepts `Document` objects. A per-call *config* (`IndentConfig | None`)
 overrides the engine's configuration for this call only.
 
-### `YAML.dump_all(documents, stream=None, *, config=None, explicit_start=None)`
+### `YAML.dump_all(documents, stream=None, *, config=None, explicit_start=None, explicit_end=None)`
 
 Serialize an iterable of documents; accepts a `DocumentStream`. The per-call
 *config* override behaves as in `YAML.dump()`.

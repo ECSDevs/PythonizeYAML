@@ -1,0 +1,18 @@
+# Compact nested sequences and explicit keys.
+compact:
+  - - a
+  - - b
+  - - c
+    - d
+explicit:
+  ? key
+  : value
+mixed:
+  ? multi
+    line key
+  : multi
+    line value
+  plain: 1
+seq-explicit:
+  - ? inner
+    : v

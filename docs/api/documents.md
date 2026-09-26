@@ -29,9 +29,13 @@ constructed directly; use `Document.new()` to build one from Python data.
 
 `Document` also implements the container protocol of its root: `len()`,
 iteration, `document[key]` and `document[key] = value` (delegating to
-`at()`/`set()`), and, for mapping roots, `keys()`, `items()`, and `values()`.
-Scalar roots coerce through `str()`, `int()`, `float()`, `complex()`, and
-`bool()`.
+`at()`/`set()`), and, for mapping roots, `keys()`, `items()`, and `values()`
+— with `items()` and `values()` reading alias entries through to their
+target values. `str(document)` returns the wrapped scalar for scalar roots
+and the dumped YAML text for container roots, and `copy.deepcopy(document)`
+returns a fully independent copy (handle-backed documents are reloaded from
+their dumped text, keeping the byte-identical formatting). Scalar roots
+coerce through `str()`, `int()`, `float()`, `complex()`, and `bool()`.
 
 ### `Document.new(root=None, *, config=None)`
 
@@ -47,6 +51,10 @@ Assigning to `value` replaces the whole root.
 
 The document root value. Read-only twin of `Document.value` kept for
 explicitness at call sites that mutate the returned containers in place.
+Alias entries created with `alias()` read through to the target's current
+value: when any alias is registered the returned mapping/sequence is a
+shallow resolved copy rather than the live container; without aliases the
+underlying data object is returned unchanged.
 
 ### `Document.root`
 
@@ -81,7 +89,9 @@ Return the value at *path*.
   read from the outside in. A single tuple or list may be passed instead of
   separate arguments.
 
-Missing paths raise `PathError`. Alias nodes resolve to their target value.
+Missing paths raise `PathError`. Alias nodes resolve to their target value:
+entries created with `alias()` read through to the target's current value,
+and aliases loaded from the source share the target's Python object.
 
 ```python
 >>> document = yaml.load("service:\n  ports: [8080, 8081]\n")
@@ -151,11 +161,14 @@ are discarded.
 
 ### `Document.alias(*path, target, anchor=None)`
 
-Make the node at *path* an alias of *target*.
+Make the node at *path* an alias of *target*. *path* may already exist (its
+current value becomes the alias) or be new — missing intermediate mapping
+keys are created, and the new entry holds the target's value as an alias.
 
 - **\\*path** – path parts of the node that should become the alias.
 - **target** – a `NodeRef` in the same document, or a path tuple pointing at
-  the anchor source. Aliasing across documents raises `AliasError`.- **anchor** – (`str | None`) anchor name to attach to the target. When
+  the anchor source. Aliasing across documents raises `AliasError`.
+- **anchor** – (`str | None`) anchor name to attach to the target. When
   omitted and the target has no anchor, a free name (`id001`, `id002`, ...)
   is generated.
 
@@ -213,14 +226,19 @@ or scalar directly:
 
 ## `NodeRef`
 
-A stable path-based view over one node of a `Document`, returned by
-`Document.node()`, `Document.set()`, `Document.append()`,
-`Document.insert()`, and `Document.alias()`. Property assignments validate
-the requested style against the node's value before mutating.
+A stable view over one node of a `Document`, returned by `Document.node()`,
+`Document.set()`, `Document.append()`, `Document.insert()`, and
+`Document.alias()`. The view is resolved by node identity, not by a frozen
+path: after list insertions or removals shift siblings around, accessing the
+ref still reaches the same node, and accessing a ref whose node was removed
+raises `PathError`. Nodes created in Python (without native node ids) fall
+back to the path the ref was created with. Property assignments validate the
+requested style against the node's value before mutating.
 
 ### `NodeRef.path`
 
-The `tuple` of path parts identifying the node.
+The `tuple` of path parts identifying the node — the node's *current* path,
+re-resolved by identity on every access.
 
 ### `NodeRef.value`
 
@@ -348,14 +366,18 @@ Insert *document* at *index*.
 
 Remove and return the `Document` at *index*.
 
-### `DocumentStream.dump(stream=None, *, config=None, explicit_start=True)`
+### `DocumentStream.dump(stream=None, *, config=None, explicit_start=None, explicit_end=None)`
 
 Emit the whole stream.
 
 - **stream** – a writable stream, or `None` to return the text.
 - **config** – (`IndentConfig | None`) emission override for changed
   documents.
-- **explicit_start** – emit a `---` marker before each document; `True` by
-  default for multi-document streams.
+- **explicit_start** – (`bool | None`) controls the leading `---` marker.
+  `None` (the default) keeps each document's own markers, so an unchanged
+  stream replays its source exactly; `True` adds any missing marker and
+  `False` strips the stream's leading start marker.
+- **explicit_end** – (`bool | None`) controls the trailing `...` marker with
+  the same semantics; when omitted each document keeps its own.
 
 An unchanged stream replays its source text exactly.

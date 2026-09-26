@@ -29,6 +29,17 @@ poetry build                                # build the Python wheel/sdist
 Run `poetry run maturin develop` after changing any Rust code. Python-only
 edits are picked up from the editable checkout without rebuilding.
 
+## Documentation
+
+The documentation site is built with VuePress and pnpm 12.6.0.
+
+```console
+pnpm install --frozen-lockfile  # install documentation dependencies
+pnpm docs:build                 # build the documentation site
+```
+
+The built site is written to `docs/.vuepress/dist`.
+
 ## Coding Style
 
 - Follow PEP 8 in Python and standard `cargo fmt` formatting in Rust.

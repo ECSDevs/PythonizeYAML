@@ -29,15 +29,19 @@ from __future__ import annotations
 
 import threading
 from dataclasses import replace
-from typing import Any, Dict, Iterable, List, Optional, Type
+from typing import Any, Dict, Iterator, Iterable, Optional, Type
 
 from .config import IndentConfig
 from .engine import SafeYAML, YAML
-from .document import Document, DocumentStream
+from .document import Document, DocumentStream, _plain_value
 
 __all__ = [
     "load",
     "load_all",
+    "full_load",
+    "full_load_all",
+    "unsafe_load",
+    "unsafe_load_all",
     "dump",
     "dump_all",
     "safe_load",
@@ -55,7 +59,6 @@ __all__ = [
 # ignored; they never change or drop the data being dumped.
 _ACCEPTED_BUT_IGNORED = frozenset(
     {
-        "Dumper",
         "allow_unicode",  # the native emitter always emits unicode; there is no ASCII-only mode
         "default_flow_style",  # flow/block style is part of what is preserved
         "encoding",  # dumps always produce str here; the caller owns encoding
@@ -88,10 +91,11 @@ def _safe_engine() -> SafeYAML:
 
 
 def _emission_kwargs(engine: YAML, kwargs: Dict[str, Any]):
-    """Split PyYAML dump keywords into (config override, explicit_start)."""
+    """Split PyYAML dump keywords into (config override, explicit_start, explicit_end)."""
     indent = kwargs.pop("indent", None)
     width = kwargs.pop("width", None)
     explicit_start = kwargs.pop("explicit_start", None)
+    explicit_end = kwargs.pop("explicit_end", None)
     for name in list(kwargs):
         if name in _ACCEPTED_BUT_IGNORED:
             del kwargs[name]
@@ -111,7 +115,7 @@ def _emission_kwargs(engine: YAML, kwargs: Dict[str, Any]):
             offset=0 if indent is not None else engine.config.offset,
             width=width if width is not None else engine.config.width,
         )
-    return config, explicit_start
+    return config, explicit_start, explicit_end
 
 
 # -- round-trip preserving API (the default) -----------------------------
@@ -127,46 +131,116 @@ def load(stream: Any, Loader: Any = None) -> Any:
     return _round_trip_engine().load(stream)
 
 
-def load_all(stream: Any, Loader: Any = None) -> List[Any]:
+def load_all(stream: Any, Loader: Any = None) -> Iterator[Any]:
     """Load every document from ``stream``, preserving comments and styles.
 
-    ``Loader`` is accepted for PyYAML compatibility and ignored.
+    Like :func:`yaml.load_all`, this returns a lazy generator: the stream is
+    read and parsed on the first iteration. ``Loader`` is accepted for PyYAML
+    compatibility and ignored.
     """
-    return _round_trip_engine().load_all(stream)
+    yield from _round_trip_engine().load_all(stream)
 
 
-def dump(data: Any, stream: Optional[Any] = None, **kwargs: Any) -> Optional[str]:
+def full_load(stream: Any) -> Any:
+    """Load plain data from ``stream``, tolerating unknown tags.
+
+    Unlike :func:`load`, the result is plain ``dict``/``list``/scalar data
+    instead of a style-aware :class:`~pythonizeyaml.document.Document`. Unlike
+    :func:`safe_load`, unknown application tags do not raise: they come back
+    as inert :class:`~pythonizeyaml.tagged.Tagged` values. Arbitrary Python
+    object construction is intentionally never performed.
+    """
+    return _plain_value(load(stream))
+
+
+def full_load_all(stream: Any) -> Iterator[Any]:
+    """Load every document as plain data, tolerating unknown tags.
+
+    See :func:`full_load` for the tag handling. Returns a lazy generator.
+    """
+    return (_plain_value(document) for document in load_all(stream))
+
+
+def unsafe_load(stream: Any) -> Any:
+    """PyYAML-signature alias of :func:`full_load`.
+
+    PyYAML's ``unsafe_load`` constructs arbitrary Python objects from tags;
+    this library intentionally never does that. Unknown tags are wrapped as
+    inert :class:`~pythonizeyaml.tagged.Tagged` values instead, so this alias
+    exists for compatibility only and is no more dangerous than
+    :func:`full_load`.
+    """
+    return full_load(stream)
+
+
+def unsafe_load_all(stream: Any) -> Iterator[Any]:
+    """PyYAML-signature alias of :func:`full_load_all`.
+
+    Arbitrary object construction is intentionally unsupported; see
+    :func:`unsafe_load` and :func:`full_load_all`.
+    """
+    return full_load_all(stream)
+
+
+def dump(
+    data: Any,
+    stream: Optional[Any] = None,
+    Dumper: Any = None,
+    **kwargs: Any,
+) -> Optional[str]:
     """Serialize ``data`` to YAML, preserving its original layout.
 
     Returns the emitted text when ``stream`` is ``None``, otherwise writes to
     ``stream`` and returns ``None``.
 
     Supported PyYAML keywords: ``indent`` (width for nested mappings/sequences),
-    ``width`` (preferred line width) and ``explicit_start`` (emit a leading
-    ``---``). ``allow_unicode``, ``default_flow_style``, ``sort_keys``,
-    ``encoding`` and ``Dumper`` are accepted and ignored, because they conflict
-    with byte-level preservation.
+    ``width`` (preferred line width), ``explicit_start`` (emit a leading
+    ``---``) and ``explicit_end`` (emit a trailing ``...``). ``Dumper`` occupies
+    the third positional slot for PyYAML signature parity and is ignored, as
+    are ``allow_unicode``, ``default_flow_style``, ``sort_keys`` and
+    ``encoding``, because they conflict with byte-level preservation.
     """
-    config, explicit_start = _emission_kwargs(_round_trip_engine(), kwargs)
+    config, explicit_start, explicit_end = _emission_kwargs(_round_trip_engine(), kwargs)
     if isinstance(data, Document):
-        return data.dump(stream, config=config, explicit_start=explicit_start)
+        return data.dump(
+            stream,
+            config=config,
+            explicit_start=explicit_start,
+            explicit_end=explicit_end,
+        )
     return _round_trip_engine().dump(
-        data, stream, config=config, explicit_start=explicit_start
+        data,
+        stream,
+        config=config,
+        explicit_start=explicit_start,
+        explicit_end=explicit_end,
     )
 
 
 def dump_all(
-    documents: Iterable[Any], stream: Optional[Any] = None, **kwargs: Any
+    documents: Iterable[Any],
+    stream: Optional[Any] = None,
+    Dumper: Any = None,
+    **kwargs: Any,
 ) -> Optional[str]:
     """Serialize ``documents`` as a multi-document stream, preserving layout.
 
     Accepts the same keywords as :func:`dump`.
     """
-    config, explicit_start = _emission_kwargs(_round_trip_engine(), kwargs)
+    config, explicit_start, explicit_end = _emission_kwargs(_round_trip_engine(), kwargs)
     if isinstance(documents, DocumentStream):
-        return documents.dump(stream, config=config, explicit_start=bool(explicit_start))
+        return documents.dump(
+            stream,
+            config=config,
+            explicit_start=explicit_start,
+            explicit_end=explicit_end,
+        )
     return _round_trip_engine().dump_all(
-        documents, stream, config=config, explicit_start=explicit_start
+        documents,
+        stream,
+        config=config,
+        explicit_start=explicit_start,
+        explicit_end=explicit_end,
     )
 
 
@@ -202,35 +276,52 @@ def safe_load(stream: Any) -> Any:
     return _safe_engine().load(stream)
 
 
-def safe_load_all(stream: Any) -> List[Any]:
+def safe_load_all(stream: Any) -> Iterator[Any]:
     """Load every document using the safe representation.
 
-    See :func:`safe_load` for the tag restrictions.
+    Like :func:`yaml.safe_load_all`, this returns a lazy generator. See
+    :func:`safe_load` for the tag restrictions.
     """
-    return _safe_engine().load_all(stream)
+    yield from _safe_engine().load_all(stream)
 
 
-def safe_dump(data: Any, stream: Optional[Any] = None, **kwargs: Any) -> Optional[str]:
+def safe_dump(
+    data: Any,
+    stream: Optional[Any] = None,
+    Dumper: Any = None,
+    **kwargs: Any,
+) -> Optional[str]:
     """Serialize ``data`` using the safe representation.
 
     Accepts the same keywords as :func:`dump`; only plain YAML types are emitted.
     """
-    config, explicit_start = _emission_kwargs(_safe_engine(), kwargs)
+    config, explicit_start, explicit_end = _emission_kwargs(_safe_engine(), kwargs)
     return _safe_engine().dump(
-        data, stream, config=config, explicit_start=explicit_start
+        data,
+        stream,
+        config=config,
+        explicit_start=explicit_start,
+        explicit_end=explicit_end,
     )
 
 
 def safe_dump_all(
-    documents: Iterable[Any], stream: Optional[Any] = None, **kwargs: Any
+    documents: Iterable[Any],
+    stream: Optional[Any] = None,
+    Dumper: Any = None,
+    **kwargs: Any,
 ) -> Optional[str]:
     """Serialize ``documents`` using the safe representation.
 
     Accepts the same keywords as :func:`dump`.
     """
-    config, explicit_start = _emission_kwargs(_safe_engine(), kwargs)
+    config, explicit_start, explicit_end = _emission_kwargs(_safe_engine(), kwargs)
     return _safe_engine().dump_all(
-        documents, stream, config=config, explicit_start=explicit_start
+        documents,
+        stream,
+        config=config,
+        explicit_start=explicit_start,
+        explicit_end=explicit_end,
     )
 
 

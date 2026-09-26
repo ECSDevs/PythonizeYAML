@@ -30,6 +30,8 @@ from __future__ import annotations
 from .api import (
     dump,
     dump_all,
+    full_load,
+    full_load_all,
     load,
     load_all,
     round_trip_dump,
@@ -40,6 +42,8 @@ from .api import (
     safe_dump_all,
     safe_load,
     safe_load_all,
+    unsafe_load,
+    unsafe_load_all,
 )
 from .config import DEFAULT_CONFIG, IndentConfig
 from .document import Document, DocumentMapping, DocumentSequence, DocumentScalar, DocumentStream, NodeRef, Comments, load_document, load_documents, read_document, read_documents
@@ -68,6 +72,10 @@ __all__ = [
     # PyYAML-compatible functions
     "load",
     "load_all",
+    "full_load",
+    "full_load_all",
+    "unsafe_load",
+    "unsafe_load_all",
     "dump",
     "dump_all",
     "safe_load",

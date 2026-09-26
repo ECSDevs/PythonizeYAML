@@ -2,6 +2,7 @@
   "name": "pythonizeyaml-docs",
   "private": true,
   "description": "VuePress documentation for PythonizeYAML",
+  "packageManager": "pnpm@12.6.0",
   "scripts": {
     "docs:dev": "vuepress dev docs",
     "docs:build": "vuepress build docs",

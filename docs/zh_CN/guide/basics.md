@@ -60,12 +60,13 @@ with open("out.yaml", "w", encoding="utf-8") as handle:
 导出选项都是仅限关键字参数,并由所有导出函数共享:
 
 ```python
-yaml.dump(data, indent=4)           # 嵌套缩进宽度,连字符与父键平齐
-yaml.dump(data, width=100)          # 首选最大行宽
+yaml.dump(data, indent=4)             # 嵌套缩进宽度,连字符与父键平齐
+yaml.dump(data, width=100)            # 首选最大行宽
 yaml.dump(data, explicit_start=True)  # 输出起始 ---
+yaml.dump(data, explicit_end=True)    # 输出结尾 ...
 ```
 
-一些 PyYAML 关键字——`allow_unicode`、`default_flow_style`、`sort_keys`、`encoding`、`Dumper`——会被接受但忽略:它们与逐字节保留相冲突,而那正是本库的核心目标。其他任何关键字都会抛出 `TypeError`。
+一些 PyYAML 关键字——`allow_unicode`、`default_flow_style`、`sort_keys`、`encoding`——会被接受但忽略:它们与逐字节保留相冲突,而那正是本库的核心目标。`Dumper` 占据 PyYAML 的第三个位置参数槽,同样被忽略。其他任何关键字都会抛出 `TypeError`。
 
 ## 4. 往返保证
 
@@ -92,12 +93,58 @@ document["version"] = "0.4.0"
 assert yaml.dump(document) == source.replace("'0.3.0'", "'0.4.0'")
 ```
 
-## 5. 多文档流
+## 5. 标量解析
 
-一个文件可以包含多个以 `---` 分隔的 YAML 文档。`load_all()` 把它们作为 `Document` 对象列表返回,`dump_all()` 把列表写回流:
+默认情况下,标量按 PyYAML 的 YAML 1.1 语义解析,因此经典的 YAML 1.1 写法都与 PyYAML 用户所期望的一致:
 
 ```python
-documents = yaml.load_all(Path("environments.yaml").read_text(encoding="utf-8"))
+yaml.safe_load("verbose: yes\n")    # {'verbose': True}
+yaml.safe_load("mode: off\n")       # {'mode': False}
+yaml.safe_load("mask: 010\n")       # {'mask': 8}      (YAML 1.1 八进制)
+yaml.safe_load("elapsed: 1:30\n")   # {'elapsed': 90}  (六十进制)
+yaml.safe_load("empty: ~\n")        # {'empty': None}
+```
+
+当文档确实以 `%YAML 1.2` 指令开头时,会改用 YAML 1.2 core schema:`yes` 保持为字符串,`010` 是十进制整数 `10`,`1:30` 是字符串:
+
+```python
+yaml.safe_load("%YAML 1.2\n---\nverbose: yes\nmask: 010\n")
+# {'verbose': 'yes', 'mask': 10}
+```
+
+两个引擎和所有加载函数都遵循同样的规则。
+
+## 6. 多行文档
+
+多行 YAML 得到完整支持,下面的每种结构都能逐字节往返。纯标量可以跨行折叠:
+
+```python
+yaml.load("description: a long\n  plain scalar that folds\n  into one line\n")["description"]
+# 'a long plain scalar that folds into one line'
+```
+
+流式集合、带引号的标量、紧凑嵌套序列与显式键都可以跨行:
+
+```python
+yaml.load("items: [\n  a,\n  b,\n  c\n]\n")["items"]
+# ['a', 'b', 'c']
+
+yaml.load('msg: "hello\n  world"\n')["msg"]
+# 'hello world'
+
+yaml.load("matrix:\n  - - a\n    - b\n  - - c\n")["matrix"]
+# [['a', 'b'], ['c']]
+
+yaml.load("? key\n: value\nsimple: x\n")
+# {'key': 'value', 'simple': 'x'}
+```
+
+## 7. 多文档流
+
+一个文件可以包含多个以 `---` 分隔的 YAML 文档。`load_all()` 把它们作为惰性生成器逐个返回 `Document` 对象——流在首次迭代时才被读取和解析,且生成器只能消费一次——`dump_all()` 把它们写回流:
+
+```python
+documents = list(yaml.load_all(Path("environments.yaml").read_text(encoding="utf-8")))
 for document in documents:
     document["service"]["port"] += 1
 
@@ -106,7 +153,7 @@ text = yaml.dump_all(documents)
 
 如果希望把整个流当作一个对象——可以整体添加、插入或删除文档——请使用 `yaml.load_documents()`,它返回 `DocumentStream`;参见[API 参考](../api/documents.md#documentstream)。
 
-## 6. 选择引擎
+## 8. 选择引擎
 
 模块级函数共享进程级默认引擎。当你需要隔离的配置——不同的缩进,或一个可以重新配置而不影响全局状态的解析器——请实例化引擎类:
 

@@ -68,12 +68,12 @@ For a YAML stream containing one document per environment, use `load_all()` and
 `dump_all()`:
 
 ```python
-documents = yaml.load_all(Path("environments.yaml").read_text(encoding="utf-8"))
+documents = list(yaml.load_all(Path("environments.yaml").read_text(encoding="utf-8")))
 for document in documents:
     document["service"]["port"] += 1
 Path("environments.yaml").write_text(yaml.dump_all(documents), encoding="utf-8")
 ```
 
-`load_all()` returns a list of `Document` objects. Each one exposes its
-comments, styles, and document markers as first-class properties through
+`load_all()` returns a lazy generator of `Document` objects. Each one exposes
+its comments, styles, and document markers as first-class properties through
 `Document.node()`; see [Documents and style editing](../api/documents.md).

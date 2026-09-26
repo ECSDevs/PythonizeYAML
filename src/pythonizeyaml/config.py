@@ -28,7 +28,6 @@ original layout to preserve.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
 
 __all__ = ["IndentConfig", "DEFAULT_CONFIG"]
 
@@ -63,12 +62,6 @@ class IndentConfig:
             raise ValueError("sequence offset must be smaller than the sequence indent")
         if self.width < 1:
             raise ValueError("width must be >= 1")
-
-    def apply_to(self, backend: Any) -> None:
-        """Apply these settings to a backend ``YAML`` emitter instance."""
-        backend.indent(mapping=self.mapping, sequence=self.sequence, offset=self.offset)
-        backend.width = self.width
-        backend.preserve_quotes = self.preserve_quotes
 
 
 DEFAULT_CONFIG = IndentConfig()

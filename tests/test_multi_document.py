@@ -50,7 +50,7 @@ def multi_source(read_fixture):
 
 
 def test_load_all_returns_documents_in_order(multi_source):
-    documents = py.load_all(multi_source)
+    documents = list(py.load_all(multi_source))
     assert len(documents) == 3
     assert [doc["name"] for doc in documents] == ["first", "second", "third"]
 
@@ -83,7 +83,7 @@ def test_inline_three_document_stream_round_trips():
 
 
 def test_inline_three_document_stream_order():
-    documents = py.load_all(THREE_DOCS)
+    documents = list(py.load_all(THREE_DOCS))
     assert [doc["name"] for doc in documents] == ["first", "second", "third"]
     assert documents[1]["nested"] == {"key": "value"}
 

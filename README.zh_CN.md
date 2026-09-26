@@ -13,7 +13,7 @@
 | 方面 | pythonizeyaml | PyYAML | yamltrip | ruamel.yaml |
 |---|---|---|---|---|
 | 主要定位 | 提供 PyYAML 风格的 YAML API,支持无损往返 | 通用 YAML 序列化器/解析器 | 保持格式的 YAML 文件编辑器与查询 API | 通用 YAML 库,具备强大的往返支持 |
-| 主要 API | `load`、`load_all`、`dump`、`dump_all`、`safe_*`、`YAML` | 同样以函数为主的 API,另提供更底层的 scanner/parser API | `load`/`loads` 返回 `Document`;不可变编辑,另有 `Editor` | 面向类实例的 `YAML()` API;旧式顶层函数已弃用 |
+| 主要 API | `load`、`load_all`、`dump`、`dump_all`、`safe_*`、`full_*`、`unsafe_*`、`YAML` | 同样以函数为主的 API,另提供更底层的 scanner/parser API | `load`/`loads` 返回 `Document`;不可变编辑,另有 `Editor` | 面向类实例的 `YAML()` API;旧式顶层函数已弃用 |
 | Document API | `load`/`load_all` 返回可变的 `Document` 对象;`load_document`/`load_documents` 与 `read_document`/`read_documents` 是显式写法;基于路径的 `NodeRef` 提供样式编辑 | 没有可变的文档包装;请使用 Python 值或底层 node/event | 以 `Document`/`Editor` 为核心的编辑与查询 API | `YAML().load()` 返回可变的 `CommentedMap`/`CommentedSeq` 文档 |
 | 返回模型 | `Document` 根(`dict`/`list` 子类);嵌套值为标准 Python 标量、`RoundTripMap`/`List`/`Set`、`Decimal`、`Tagged` | 普通 Python 对象以及 YAML AST/event/token 对象 | 包裹普通 Python 值的 `Document` | `CommentedMap`、`CommentedSeq` 及标量子类 |
 | 后端 | 通过 PyO3 调用的自研 Rust 解析器/发射器 | 纯 Python,另有可选的 LibYAML C 扩展 | 通过 Rust `yamlpath`/`yamlpatch` 使用 `tree-sitter-yaml` | Python,另有可选的 C 解析器 |
@@ -24,7 +24,7 @@
 | 修改模型 | 直接修改加载得到的 `Document` 对象(dict 风格/list 风格);未改动的字节保持原样 | 修改普通对象后整体重新生成 | 不可变的 `Document` 方法或可变的 `Editor`;最小化补丁 | 修改 `CommentedMap`/`CommentedSeq` 对象 |
 | 样式编辑 API | `NodeRef` 可编辑标量/集合样式、注释、标签、锚点、别名、chomping、指令与文档标记 | 提供导出选项与底层 representer;没有源样式编辑 API | 路径/编辑器操作可保留选定的源格式 | 通过对象属性与 `YAML` 发射选项提供往返样式控制 |
 | 结构编辑保真度 | 局部编辑以补丁方式应用;被替换/新增的子树可能按规范格式输出 | 整体重新生成 | 为最小化结构补丁而设计 | 对附属注释与格式的保留非常完整 |
-| YAML schema | 默认 YAML 1.2 core;`%YAML 1.1` 切换为旧版布尔值 | 默认面向 YAML 1.1 的 resolver | 只关注可编辑的 YAML 值;不解释标签 | 默认 YAML 1.2 |
+| YAML schema | 默认采用与 PyYAML 一致的 YAML 1.1 resolver(`yes`/`no` 布尔值、`010` 八进制、`1:30` 六十进制);出现 `%YAML 1.2` 指令时切换为 YAML 1.2 core schema | 默认面向 YAML 1.1 的 resolver | 只关注可编辑的 YAML 值;不解释标签 | 默认 YAML 1.2 |
 | 大整数 | 任意精度的 Python `int` | 任意精度的 Python `int` | 超出有符号 64 位范围时可能丢失精度 | 任意精度的 Python `int` |
 | Decimal 值 | 恰好能以 binary64 表示的十进制数解析为 `float`;其余解析为 `Decimal`;`!!decimal` 强制为 `Decimal` | 通常为 `float`;需要自定义 constructor 才能得到 `Decimal` | 基础标量转换;没有针对大十进制数的特殊支持 | 通常为 `float`;需要自定义 representer/constructor 才能得到 `Decimal` |
 | 未知/应用标签 | 以 `Tagged` 返回;从不执行 | 取决于 loader/constructor;不安全的 loader 可能构造 Python 对象 | 不解释 | 保留;constructor 可自定义行为 |
@@ -108,12 +108,15 @@ YAML 的 core 与 common 标准标签都会被解析,包括 `!!binary`、`!!time
 value = yaml.safe_load("enabled: true\n")
 ```
 
+`full_load`/`full_load_all` 返回普通数据并容忍未知标签(未知标签以惰性的 `Tagged` 值返回),`unsafe_load`/`unsafe_load_all` 是它们的正式文档别名。与本库的每个加载器一样,它们从不构造任意 Python 对象。
+
 ## API
 
 模块暴露:
 
 - `load`、`load_all`、`dump`、`dump_all`
 - `safe_load`、`safe_load_all`、`safe_dump`、`safe_dump_all`
+- `full_load`、`full_load_all`、`unsafe_load`、`unsafe_load_all`
 - `round_trip_load`、`round_trip_load_all`、`round_trip_dump`、`round_trip_dump_all`
 - `YAML`、`SafeYAML`、`IndentConfig`、`DEFAULT_CONFIG`、`Tagged`
 - `Document`、`DocumentStream`、`NodeRef` 与 `Comments`
@@ -121,7 +124,7 @@ value = yaml.safe_load("enabled: true\n")
 - `ScalarStyle`、`CollectionStyle`、`Chomping` 与 `SourceSpan`
 - `YAMLError` 及其与 PyYAML 兼容的子类
 
-`Loader=`、`sort_keys`、`default_flow_style`、`allow_unicode` 和 `encoding` 为迁移兼容而接受;在与无损输出冲突的地方会被忽略。
+`Loader=`、`Dumper`、`sort_keys`、`default_flow_style`、`allow_unicode` 和 `encoding` 为迁移兼容而接受;在与无损输出冲突的地方会被忽略。
 
 ## 高级样式文档
 

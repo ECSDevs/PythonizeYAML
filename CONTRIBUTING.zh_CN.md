@@ -27,6 +27,17 @@ poetry build                                # 构建 Python wheel/sdist
 修改任何 Rust 代码后都需要重新运行 `poetry run maturin develop`。仅修改
 Python 代码时,可编辑安装会自动生效,无需重新构建。
 
+## 文档构建
+
+文档站使用 VuePress 构建,pnpm 版本固定为 12.6.0。
+
+```console
+pnpm install --frozen-lockfile  # 安装文档依赖
+pnpm docs:build                 # 构建文档站
+```
+
+构建产物输出到 `docs/.vuepress/dist`。
+
 ## 代码风格
 
 - Python 遵循 PEP 8,Rust 使用标准 `cargo fmt` 格式化。

@@ -153,10 +153,6 @@ def translate_native_error(exc: BaseException, source: str = "<unicode string>")
     return error_type(str(problem))
 
 
-def translate_representer_error(exc: BaseException) -> YAMLError:
-    return RepresenterError(str(exc))
-
-
 def _mark_from_byte_offset(source: str, offset: int, name: str) -> Mark:
     encoded = source.encode("utf-8")
     prefix = encoded[: max(0, offset)].decode("utf-8", errors="ignore")

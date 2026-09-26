@@ -26,24 +26,12 @@ from typing import Any, Iterable, List, Optional
 
 from . import _native
 from .config import DEFAULT_CONFIG, IndentConfig
+from .document import _has_explicit_end, _read_stream
 from .errors import RepresenterError, YAMLError, translate_native_error
 
 __all__ = ["YAML", "SafeYAML"]
 
 Stream = Any
-
-
-def _read_text(stream: Stream) -> str:
-    if hasattr(stream, "read"):
-        stream = stream.read()
-    if isinstance(stream, bytes):
-        return stream.decode("utf-8")
-    if isinstance(stream, str):
-        return stream
-    raise TypeError(
-        "expected a str, bytes or a stream with a .read() method, got "
-        f"{type(stream).__name__}"
-    )
 
 
 class _NativeBackend:
@@ -68,7 +56,7 @@ class YAML:
     def load(self, stream: Stream) -> Any:
         from .document import _make_document
 
-        text = _read_text(stream)
+        text = _read_stream(stream)
         try:
             value, _handle = _native.parse(text, safe=self._is_safe)
         except _native.NativeYamlError as exc:
@@ -81,7 +69,7 @@ class YAML:
     def load_all(self, stream: Stream) -> List[Any]:
         from .document import _make_document
 
-        text = _read_text(stream)
+        text = _read_stream(stream)
         try:
             values, _handle = _native.parse_all(text, safe=self._is_safe)
         except _native.NativeYamlError as exc:
@@ -101,17 +89,29 @@ class YAML:
         *,
         config: Optional[IndentConfig] = None,
         explicit_start: Optional[bool] = None,
+        explicit_end: Optional[bool] = None,
     ) -> Optional[str]:
         from .document import Document
 
         if isinstance(data, Document):
-            return data.dump(stream, config=config, explicit_start=explicit_start)
+            _reject_safe_tagged(data._data, self._is_safe)
+            _reject_safe_document_tags(data, self._is_safe)
+            return data.dump(
+                stream,
+                config=config,
+                explicit_start=explicit_start,
+                explicit_end=explicit_end,
+            )
         _reject_safe_tagged(data, self._is_safe)
         selected = config if config is not None else self.config
         try:
             text = _native.dump(data, config=selected, explicit_start=explicit_start)
         except _native.NativeYamlError as exc:
             raise translate_native_error(exc) from None
+        if explicit_end and not _has_explicit_end(text):
+            if text and not text.endswith("\n"):
+                text += "\n"
+            text += "...\n"
         if stream is None:
             return text
         stream.write(text)
@@ -124,15 +124,35 @@ class YAML:
         *,
         config: Optional[IndentConfig] = None,
         explicit_start: Optional[bool] = None,
+        explicit_end: Optional[bool] = None,
     ) -> Optional[str]:
+        from .document import Document
+
         documents = list(documents)
         for document in documents:
             _reject_safe_tagged(document, self._is_safe)
+            if isinstance(document, Document):
+                _reject_safe_document_tags(document, self._is_safe)
         selected = config if config is not None else self.config
         try:
-            text = _native.dump_all(
-                documents, config=selected, explicit_start=explicit_start
-            )
+            if explicit_end:
+                # Emit per document so every one can be terminated with "...".
+                parts = []
+                for index, document in enumerate(documents):
+                    start = True if index else explicit_start
+                    parts.append(_native.dump(document, config=selected, explicit_start=start))
+                text = ""
+                for index, part in enumerate(parts):
+                    if index:
+                        text += "...\n"
+                    text += part
+                if text and not text.endswith("\n"):
+                    text += "\n"
+                text += "...\n"
+            else:
+                text = _native.dump_all(
+                    documents, config=selected, explicit_start=explicit_start
+                )
         except _native.NativeYamlError as exc:
             raise translate_native_error(exc) from None
         if stream is None:
@@ -171,5 +191,24 @@ def _reject_safe_tagged(value: Any, safe: bool, seen: Optional[set[int]] = None)
     elif isinstance(value, (list, tuple, set, frozenset)):
         for child in value:
             _reject_safe_tagged(child, safe, seen)
+
+
+def _reject_safe_document_tags(document: Any, safe: bool) -> None:
+    """Reject local (application) tags anywhere in a ``Document`` for safe dumps.
+
+    Standard ``!!``-prefixed tags resolve to plain values and stay allowed;
+    local tags such as ``!foo`` are rejected exactly like the plain-data path
+    rejects :class:`~pythonizeyaml.tagged.Tagged` instances.
+    """
+    if not safe:
+        return
+    from .document import NodeRef
+
+    for path, _value in document._iter_paths():
+        tag = NodeRef(document, path).tag
+        if tag is not None and not tag.startswith("!!"):
+            raise RepresenterError(
+                f"safe_dump does not support custom tags (found {tag!r})"
+            )
 
 

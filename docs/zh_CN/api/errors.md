@@ -35,7 +35,7 @@ YAMLError
 
 ### `ParserError`
 
-token 流不符合 YAML 语法,例如流式序列从未闭合。
+token 流不符合 YAML 语法,例如流式序列从未闭合。解析器还强制执行 128 层的嵌套深度上限(与 libyaml 默认值一致):嵌套更深的输入会抛出 `ParserError`,而不是耗尽调用栈。
 
 ### `ComposerError`
 
@@ -51,11 +51,11 @@ token 流不符合 YAML 语法,例如流式序列从未闭合。
 
 ## `RepresenterError`
 
-值无法被表示。安全引擎在 `safe_dump()` 输入中出现 `Tagged` 值时抛出。
+值无法被表示。安全引擎在 `safe_dump()` 输入中出现 `Tagged` 值或自定义应用标签时抛出;把复数这类没有 YAML 表示的值输出到无法表示的位置时也会抛出。
 
 ## `SerializerError`
 
-输出前的序列化步骤失败。
+输出前的序列化步骤失败,例如映射键无法被表示:复数可以作为值输出,但用作映射键时会抛出 `SerializerError`。
 
 ## `PathError`
 

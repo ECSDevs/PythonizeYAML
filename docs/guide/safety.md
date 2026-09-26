@@ -22,7 +22,8 @@ Input such as `!!python/object/apply:os.system` raises
 choice for data that crosses a trust boundary.
 
 The corresponding `safe_dump()` and `safe_dump_all()` only emit plain YAML
-types and refuse `Tagged` values with `RepresenterError`.
+types: `Tagged` values, and custom application tags carried anywhere in a
+`Document`, are refused with `RepresenterError`.
 
 ## 2. A validator sketch
 
@@ -75,7 +76,35 @@ assert yaml.dump(value) == "job: !runner {name: tests}\n"
 The `Tagged` object round-trips verbatim, so tools can edit such files
 without understanding the tags — and without the file losing them.
 
-## 4. Choosing the engine
+When you want plain Python data instead of an editable document but the
+input may carry application tags, `full_load()` returns plain `dict`/`list`
+data with unknown tags wrapped as inert `Tagged` values. `unsafe_load()` is
+a documented alias of `full_load()`: like every loader in this library it
+never constructs arbitrary Python objects, so the name is a compatibility
+spelling, not an added risk.
+
+## 4. Parser hardening
+
+Malformed input fails safely and precisely:
+
+- Input nested deeper than the parser's 128-level limit raises
+  `ParserError` ("maximum nesting depth exceeded") instead of exhausting
+  the stack.
+- Invalid escape sequences in double-quoted scalars — an unknown escape
+  like `\q`, or a malformed hex escape like `\xZZ` — raise
+  `ScannerError`.
+- Failures never surface as internal panics or native crashes: every error
+  comes back as one of the documented `YAMLError` subclasses, and
+  parse-side errors carry the source position.
+
+```python
+try:
+    yaml.safe_load('msg: "bad \\q escape"\n')
+except yaml.ScannerError as error:
+    print(error)  # found unknown escape character 'q' ...
+```
+
+## 5. Choosing the engine
 
 - Configuration you own and edit: `yaml.load()` — you get documents, styles,
   and comments.

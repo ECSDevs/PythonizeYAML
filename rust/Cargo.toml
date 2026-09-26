@@ -25,11 +25,20 @@ edition = "2021"
 rust-version = "1.83"
 license = "MIT"
 description = "Native parser and emitter for pythonizeyaml"
+repository = "https://github.com/ECSDevs/PythonizeYAML"
+readme = "../README.md"
+keywords = ["yaml", "pyyaml", "parser", "serialization", "round-trip"]
+categories = ["encoding", "parser-implementations"]
 autoexamples = false
 
 [lib]
 name = "_native"
 crate-type = ["cdylib", "rlib"]
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "debuginfo"
 
 [dependencies]
 base64 = "0.22.1"

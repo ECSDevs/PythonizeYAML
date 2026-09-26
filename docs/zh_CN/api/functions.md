@@ -35,7 +35,7 @@ load_all(stream, Loader=None)
 - **stream** —— 要读取的 YAML 流。
 - **Loader** —— 为 PyYAML 迁移兼容而接受并被忽略。
 
-返回按源顺序排列的 `Document` 对象列表,每个文档对应一个元素。错误行为与 `load()` 相同。若更倾向于使用有序的 `DocumentStream` 包装,请使用 `load_documents()`。
+返回一个惰性生成器,按源顺序逐个产出 `Document` 对象。与 PyYAML 的 `load_all()` 一样,流在首次迭代时才被读取和解析,且生成器只能消费一次。错误行为与 `load()` 相同。若更倾向于使用有序的 `DocumentStream` 包装,请使用 `load_documents()`。
 
 ```python
 >>> for doc in yaml.load_all("---\nname: one\n---\nname: two\n"):
@@ -47,19 +47,21 @@ load_all(stream, Loader=None)
 ## `dump()`
 
 ```python
-dump(data, stream=None, *, indent=None, width=None, explicit_start=None,
-     allow_unicode=None, default_flow_style=None, sort_keys=None,
-     encoding=None, Dumper=None)
+dump(data, stream=None, Dumper=None, *, indent=None, width=None,
+     explicit_start=None, explicit_end=None, allow_unicode=None,
+     default_flow_style=None, sort_keys=None, encoding=None)
 ```
 
 在保留原始布局的前提下把 *data* 序列化为 YAML。
 
-- **data** —— 普通 Python 数据或 `Document`。传入 `Document` 时,`dump()` 委托给 `Document.dump()`:未经修改的文档精确回放源文本,修改过的节点以局部补丁方式应用。
+- **data** —— 普通 Python 数据或 `Document`。传入 `Document` 时,`dump()` 委托给 `Document.dump()`:未经修改的文档精确回放源文本,修改过的节点以局部补丁方式应用。传入从文档中读出的往返容器(例如 `document["outer"]`)时,只输出该节点自身的 YAML,并保留其源布局。
 - **stream** —— 可写流。为 `None`(默认)时返回 YAML 文本 `str`;否则写入 *stream* 并返回 `None`。
 - **indent** —— (`int | None`)设置嵌套映射与序列的缩进宽度,并把序列偏移重置为零,近似 PyYAML 的 `indent` 行为。已加载的文档除非显式传入,否则保留原始布局。
 - **width** —— (`int | None`)发射器为新数据选择布局时的首选最大行宽。
 - **explicit_start** —— (`bool | None`)输出起始 `---` 文档标记。
-- **allow_unicode**、**default_flow_style**、**sort_keys**、**encoding**、**Dumper** —— 为 PyYAML 迁移兼容而接受并被忽略,因为源布局与 Unicode 输出本来就会被保留。
+- **explicit_end** —— (`bool | None`)输出结尾 `...` 文档标记。
+- **allow_unicode**、**default_flow_style**、**sort_keys**、**encoding** —— 为 PyYAML 迁移兼容而接受并被忽略,因为源布局与 Unicode 输出本来就会被保留。
+- **Dumper** —— 为签名一致占据 PyYAML 的第三个位置参数槽,被忽略。
 
 其他任何关键字参数都会抛出 `TypeError`。
 
@@ -71,9 +73,9 @@ dump(data, stream=None, *, indent=None, width=None, explicit_start=None,
 ## `dump_all()`
 
 ```python
-dump_all(documents, stream=None, *, indent=None, width=None,
-         explicit_start=None, allow_unicode=None, default_flow_style=None,
-         sort_keys=None, encoding=None, Dumper=None)
+dump_all(documents, stream=None, Dumper=None, *, indent=None, width=None,
+         explicit_start=None, explicit_end=None, allow_unicode=None,
+         default_flow_style=None, sort_keys=None, encoding=None)
 ```
 
 把文档可迭代对象序列化为多文档流,文档之间以 `---` 标记分隔。
@@ -82,7 +84,7 @@ dump_all(documents, stream=None, *, indent=None, width=None,
 - **stream** —— 与 `dump()` 相同的约定。
 - 其余关键字参数 —— 与 `dump()` 相同。
 
-生成器会在输出前被消费。不传 `explicit_start` 时,第一个文档不会带起始标记。
+生成器会在输出前被消费。不传 `explicit_start` 时,第一个文档不会带起始标记;传入 `explicit_end` 时,每个文档都会以 `...` 结束。
 
 ```python
 >>> yaml.dump_all([{"name": "one"}, {"name": "two"}], explicit_start=True)
@@ -116,19 +118,53 @@ safe_load_all(stream)
 
 - **stream** —— 要读取的 YAML 流。
 
-返回普通 Python 值列表。标签限制与 `safe_load()` 相同。
+返回一个惰性生成器,逐个产出普通 Python 值——流在首次迭代时才被读取和解析,且生成器只能消费一次。标签限制与 `safe_load()` 相同。
+
+## `full_load()`
+
+```python
+full_load(stream)
+```
+
+把第一个文档加载为普通数据,并容忍未知标签。
+
+- **stream** —— 要读取的 YAML 源。
+
+返回不带文档包装的普通 `dict`、`list` 与标量值。与 `safe_load()` 不同,未知应用标签不会抛错:它们以惰性的 `Tagged` 值返回。本库从不根据标签构造任意 Python 对象——`!!python/object/apply:...` 之类与其他未知标签一样被包装,绝不会被执行。
+
+```python
+>>> yaml.full_load("job: !runner {name: tests}\n")
+{'job': Tagged(tag='!runner', value={'name': 'tests'})}
+```
+
+## `full_load_all()`
+
+```python
+full_load_all(stream)
+```
+
+把每个文档加载为普通数据,并容忍未知标签。标签处理见 `full_load()`。返回一个惰性生成器。
+
+## `unsafe_load()` 与 `unsafe_load_all()`
+
+```python
+unsafe_load(stream)
+unsafe_load_all(stream)
+```
+
+`full_load()` 与 `full_load_all()` 的 PyYAML 签名别名(有正式文档说明)。PyYAML 的 `unsafe_load` 会根据标签构造任意 Python 对象;本库有意永不这样做,因此这些别名并不比 `full_load()` 更危险,仅为兼容而存在。
 
 ## `safe_dump()`
 
 ```python
-safe_dump(data, stream=None, *, indent=None, width=None, explicit_start=None,
-          allow_unicode=None, default_flow_style=None, sort_keys=None,
-          encoding=None, Dumper=None)
+safe_dump(data, stream=None, Dumper=None, *, indent=None, width=None,
+          explicit_start=None, explicit_end=None, allow_unicode=None,
+          default_flow_style=None, sort_keys=None, encoding=None)
 ```
 
 使用安全表示序列化 *data*;只会输出普通 YAML 类型。
 
-- **data** —— 普通 Python 数据。*data* 中任何位置的 `Tagged` 值都会抛出 `RepresenterError`。
+- **data** —— 普通 Python 数据。*data* 中任何位置的 `Tagged` 值都会抛出 `RepresenterError`;`Document` 中任何位置出现的自定义应用标签(`!runner` 风格)同样会被拒绝,而能解析为普通值的标准 `!!` 前缀标签仍然允许。
 - **stream** —— 与 `dump()` 相同的约定。
 - 其余关键字参数 —— 与 `dump()` 相同。
 
@@ -140,10 +176,9 @@ safe_dump(data, stream=None, *, indent=None, width=None, explicit_start=None,
 ## `safe_dump_all()`
 
 ```python
-safe_dump_all(documents, stream=None, *, indent=None, width=None,
-              explicit_start=None, allow_unicode=None,
-              default_flow_style=None, sort_keys=None, encoding=None,
-              Dumper=None)
+safe_dump_all(documents, stream=None, Dumper=None, *, indent=None, width=None,
+              explicit_start=None, explicit_end=None, allow_unicode=None,
+              default_flow_style=None, sort_keys=None, encoding=None)
 ```
 
 使用安全表示序列化文档可迭代对象。
@@ -184,11 +219,11 @@ SafeYAML(config=None)
 
 加载每一个文档;返回 `Document` 对象列表(`SafeYAML` 返回普通值)。
 
-### `YAML.dump(data, stream=None, *, config=None, explicit_start=None)`
+### `YAML.dump(data, stream=None, *, config=None, explicit_start=None, explicit_end=None)`
 
 序列化 *data*;可以接受 `Document` 对象。调用时传入的 *config*(`IndentConfig | None`)只在该次调用中覆盖引擎配置。
 
-### `YAML.dump_all(documents, stream=None, *, config=None, explicit_start=None)`
+### `YAML.dump_all(documents, stream=None, *, config=None, explicit_start=None, explicit_end=None)`
 
 序列化文档可迭代对象;可以接受 `DocumentStream`。*config* 覆盖行为与 `YAML.dump()` 相同。
 

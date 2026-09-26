@@ -18,7 +18,7 @@ The table below compares `pythonizeyaml` 0.3.0 with PyYAML, `yamltrip`, and
 | Area | pythonizeyaml | PyYAML | yamltrip | ruamel.yaml |
 |---|---|---|---|---|
 | Primary purpose | PyYAML-style YAML API with lossless round trips | General YAML serializer/parser | Format-preserving YAML file editor and query API | General YAML with strong round-trip support |
-| Main API | `load`, `load_all`, `dump`, `dump_all`, `safe_*`, `YAML` | Same function-oriented API, plus lower-level scanner/parser APIs | `load`/`loads` return `Document`; immutable edits plus `Editor` | Class-oriented `YAML()` API; legacy top-level functions are deprecated |
+| Main API | `load`, `load_all`, `dump`, `dump_all`, `safe_*`, `full_*`, `unsafe_*`, `YAML` | Same function-oriented API, plus lower-level scanner/parser APIs | `load`/`loads` return `Document`; immutable edits plus `Editor` | Class-oriented `YAML()` API; legacy top-level functions are deprecated |
 | Document API | `load`/`load_all` return mutable `Document` objects; `load_document`/`load_documents` and `read_document`/`read_documents` are explicit spellings; path-based `NodeRef` for style editing | No mutable document wrapper; use Python values or low-level nodes/events | `Document`/`Editor` centered editing and query API | `YAML().load()` returns mutable `CommentedMap`/`CommentedSeq` documents |
 | Return model | `Document` roots (`dict`/`list` subclasses); nested standard Python scalars, `RoundTripMap`/`List`/`Set`, `Decimal`, `Tagged` | Plain Python objects and YAML AST/event/token objects | `Document` wrapper around plain Python values | `CommentedMap`, `CommentedSeq`, scalar subclasses |
 | Backend | Custom Rust parser/emitter through PyO3 | Pure Python plus optional LibYAML C extension | `tree-sitter-yaml` through Rust `yamlpath`/`yamlpatch` | Python plus optional C parser |
@@ -29,7 +29,7 @@ The table below compares `pythonizeyaml` 0.3.0 with PyYAML, `yamltrip`, and
 | Mutation model | Mutate loaded `Document` objects (dict-like/list-like); unchanged bytes are retained | Mutate plain objects, then regenerate | Immutable `Document` methods or mutable `Editor`; minimal patches | Mutate `CommentedMap`/`CommentedSeq` objects |
 | Style editing API | `NodeRef` edits scalar/collection styles, comments, tags, anchors, aliases, chomping, directives, and markers | Dumper options and low-level representers; no source style editing API | Path/editor operations preserve selected source formatting | Object attributes and `YAML` emitter options expose round-trip style controls |
 | Structural edit fidelity | Local edits are patched; replaced/new subtrees may be canonically emitted | Full regeneration | Designed for minimal structural patches | Strong preservation of attached comments and formatting |
-| YAML schema | YAML 1.2 core by default; `%YAML 1.1` switches legacy booleans | YAML 1.1-oriented resolver by default | Focused on editable YAML values; tags are not interpreted | YAML 1.2 by default |
+| YAML schema | PyYAML-compatible YAML 1.1 resolver by default (`yes`/`no` booleans, `010` octal, `1:30` sexagesimal); a `%YAML 1.2` directive switches to the YAML 1.2 core schema | YAML 1.1-oriented resolver by default | Focused on editable YAML values; tags are not interpreted | YAML 1.2 by default |
 | Large integers | Arbitrary-precision Python `int` | Arbitrary-precision Python `int` | May lose precision outside signed 64-bit range | Arbitrary-precision Python `int` |
 | Decimal values | Exact binary64-representable decimals become `float`; others become `Decimal`; `!!decimal` forces `Decimal` | Normally `float`; custom constructors needed for `Decimal` | Basic scalar conversion; no special big-decimal support | Normally `float`; custom representers/constructors needed for `Decimal` |
 | Unknown/application tags | Returned as `Tagged`; never executed | Depends on loader/constructors; unsafe loaders can construct Python objects | Not interpreted | Preserved; constructors can define behavior |
@@ -129,12 +129,18 @@ non-standard tags instead of constructing arbitrary Python objects.
 value = yaml.safe_load("enabled: true\n")
 ```
 
+`full_load`/`full_load_all` return plain data while tolerating unknown tags
+(they come back as inert `Tagged` values), and `unsafe_load`/`unsafe_load_all`
+are documented aliases of them. Like every loader in this library, they never
+construct arbitrary Python objects.
+
 ## API
 
 The module exposes:
 
 - `load`, `load_all`, `dump`, `dump_all`
 - `safe_load`, `safe_load_all`, `safe_dump`, `safe_dump_all`
+- `full_load`, `full_load_all`, `unsafe_load`, `unsafe_load_all`
 - `round_trip_load`, `round_trip_load_all`, `round_trip_dump`, `round_trip_dump_all`
 - `YAML`, `SafeYAML`, `IndentConfig`, `DEFAULT_CONFIG`, `Tagged`
 - `Document`, `DocumentStream`, `NodeRef`, and `Comments`
@@ -142,9 +148,9 @@ The module exposes:
 - `ScalarStyle`, `CollectionStyle`, `Chomping`, and `SourceSpan`
 - `YAMLError` and its PyYAML-compatible subclasses
 
-`Loader=`, `sort_keys`, `default_flow_style`, `allow_unicode`, and `encoding` are
-accepted for migration compatibility and ignored where they conflict with
-lossless output.
+`Loader=`, `Dumper`, `sort_keys`, `default_flow_style`, `allow_unicode`, and
+`encoding` are accepted for migration compatibility and ignored where they
+conflict with lossless output.
 
 ## Advanced Style Documents
 
