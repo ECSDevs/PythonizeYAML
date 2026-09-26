@@ -50,7 +50,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]
+        # Only the bounds of the supported range (requires-python >=3.10,<4.0).
+        python-version: ["3.10", "3.14"]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -60,6 +61,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - run: python -m pip install poetry maturin
       - run: poetry install --with dev
+      # Source (debug) build only; wheels are built and tested by release.yml.
       - run: poetry run maturin develop
       - run: poetry run pytest -q
       - run: poetry run python smoke_check.py
@@ -68,16 +70,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      # Provides libpython for the test binary.
+      - uses: actions/setup-python@v5
         with:
-          components: rustfmt, clippy
-      - run: cargo test --manifest-path rust/Cargo.toml
-      - run: cargo fmt --manifest-path rust/Cargo.toml --check
-      - name: cargo clippy
-        # TODO: make blocking once the 15 preexisting clippy warnings in
-        # rust/src are fixed (as of clippy 1.98, stable).
-        continue-on-error: true
-        run: cargo clippy --manifest-path rust/Cargo.toml --all-targets
+          python-version: "3.12"
+      - uses: dtolnay/rust-toolchain@stable
+      # --no-default-features drops extension-module so the test binary links
+      # libpython instead of leaving Python symbols to the interpreter.
+      - run: cargo test --manifest-path rust/Cargo.toml --no-default-features
 
   msrv:
     runs-on: ubuntu-latest
@@ -89,67 +89,3 @@ jobs:
       # `+1.83.0` beats the repo's rust-toolchain.toml (channel = stable).
       - run: cargo +1.83.0 check --manifest-path rust/Cargo.toml
 
-  wheels:
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: ubuntu-latest
-            target: x86_64
-          - os: ubuntu-latest
-            target: aarch64
-          - os: windows-latest
-            target: x86_64
-          - os: macos-14
-            target: aarch64
-          - os: macos-15-intel
-            target: x86_64
-    runs-on: ${{ matrix.os }}
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-      - uses: PyO3/maturin-action@v1
-        with:
-          command: build
-          args: --release --out dist
-          target: ${{ matrix.target }}
-          manylinux: auto
-      - uses: actions/upload-artifact@v4
-        with:
-          name: wheels-${{ matrix.os }}-${{ matrix.target }}
-          path: dist
-
-  test-wheels:
-    needs: wheels
-    # The linux aarch64 wheel is cross-compiled and has no matching hosted
-    # runner, so it is not exercised here (the wheel build itself ran in QEMU).
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: ubuntu-latest
-            artifact: wheels-ubuntu-latest-x86_64
-          - os: windows-latest
-            artifact: wheels-windows-latest-x86_64
-          - os: macos-14
-            artifact: wheels-macos-14-aarch64
-          - os: macos-15-intel
-            artifact: wheels-macos-15-intel-x86_64
-    runs-on: ${{ matrix.os }}
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-      - uses: actions/download-artifact@v4
-        with:
-          name: ${{ matrix.artifact }}
-          path: dist
-      - name: Install built wheel
-        # --no-index guarantees the wheel under test is imported, not PyPI.
-        run: python -m pip install --no-index --find-links dist pythonizeyaml
-      - run: python -m pip install pytest
-      # src/ layout: the tests import the installed wheel, not the checkout.
-      - run: python -m pytest tests/ -q

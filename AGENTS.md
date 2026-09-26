@@ -13,7 +13,7 @@ Use Python 3.10+, Rust 1.83+, and Poetry:
 
 ```console
 poetry install                              # install Python dependencies
-cargo test --manifest-path rust/Cargo.toml # run Rust unit tests
+cargo test --manifest-path rust/Cargo.toml --no-default-features # run Rust unit tests
 poetry run maturin develop                  # build the native extension
 poetry run pytest                            # run Python tests
 poetry build                                 # build the Python wheel/sdist

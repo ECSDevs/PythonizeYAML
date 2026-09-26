@@ -199,7 +199,7 @@ retain their original layout unless an override is supplied.
 ## Development
 
 ```console
-cargo test --manifest-path rust/Cargo.toml
+cargo test --manifest-path rust/Cargo.toml --no-default-features
 poetry run maturin develop
 poetry run pytest
 poetry build

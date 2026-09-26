@@ -60,7 +60,7 @@ build-backend = "maturin"
 python-source = "src"
 module-name = "pythonizeyaml._native"
 manifest-path = "rust/Cargo.toml"
-features = ["pyo3/extension-module"]
+features = ["extension-module"]
 exclude = ["**/__pycache__/**", "**/*.pyc", "rust/target/**"]
 
 [tool.pytest.ini_options]

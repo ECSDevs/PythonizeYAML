@@ -40,13 +40,21 @@ lto = "thin"
 codegen-units = 1
 strip = "debuginfo"
 
+[features]
+# extension-module leaves Python symbols to the interpreter, which makes
+# executables (cargo test) fail to link on Linux/macOS; run tests with
+# --no-default-features so libpython is linked instead. Maturin keeps the
+# default on.
+extension-module = ["pyo3/extension-module"]
+default = ["extension-module"]
+
 [dependencies]
 base64 = "0.22.1"
 bigdecimal = "0.4.10"
 num-bigint = "0.4.6"
 num-rational = "0.4.2"
 num-traits = "0.2.19"
-pyo3 = { version = "0.29.2", features = ["extension-module", "abi3-py310"] }
+pyo3 = { version = "0.29.2", features = ["abi3-py310"] }
 thiserror = "2.0.21"
 
 

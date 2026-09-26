@@ -12,20 +12,18 @@ permissions:
 
 jobs:
   build:
+    # Intentionally minimal: abi3-py310 wheels for linux/windows x86_64 and
+    # macos arm64 only; other platforms install from the sdist.
     strategy:
       fail-fast: false
       matrix:
         include:
           - os: ubuntu-latest
             target: x86_64
-          - os: ubuntu-latest
-            target: aarch64
           - os: windows-latest
             target: x86_64
           - os: macos-14
             target: aarch64
-          - os: macos-15-intel
-            target: x86_64
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -61,8 +59,6 @@ jobs:
 
   test-wheels:
     needs: build
-    # The linux aarch64 wheel is cross-compiled and has no matching hosted
-    # runner, so it is not exercised here (the wheel build itself ran in QEMU).
     strategy:
       fail-fast: false
       matrix:
@@ -73,8 +69,6 @@ jobs:
             artifact: release-windows-latest-x86_64
           - os: macos-14
             artifact: release-macos-14-aarch64
-          - os: macos-15-intel
-            artifact: release-macos-15-intel-x86_64
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
