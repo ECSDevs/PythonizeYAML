@@ -142,7 +142,7 @@ text = document.dump()
 
 `NodeRef` 暴露 `style`、`collection_style`、`chomping`、`block_indent_indicator`、`tag`、`anchor`、`comments`、`is_alias` 和 `alias_target`。其 `update(...)` 方法可原子地应用多个字段。样式变更在修改前会先校验;失败情形参见 `StyleError`、`PathError` 和 `AliasError`。
 
-仓库搭建、测试与贡献约定请参见 [`AGENTS.md`](AGENTS.md)。
+仓库搭建、测试与贡献约定请参见 [`CONTRIBUTING.md`](CONTRIBUTING.zh_CN.md)。
 
 ## 缩进配置
 

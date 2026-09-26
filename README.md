@@ -178,7 +178,7 @@ Style changes are validated before mutation; see `StyleError`, `PathError`, and
 `AliasError` for failures.
 
 For repository setup, testing, and contribution conventions, see
-[`AGENTS.md`](AGENTS.md).
+[`CONTRIBUTING.md`](CONTRIBUTING.md).
 ## Indentation Configuration
 
 `IndentConfig(mapping=2, sequence=2, offset=0, width=80, preserve_quotes=True)`
