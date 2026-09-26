@@ -204,7 +204,7 @@ class NodeRef:
             raise StyleError(f"invalid YAML anchor name: {value!r}")
         old = self.anchor
         native_aliases = self._document._native_aliases_for_target(self._path)
-        if old is not None and old != value:
+        if value is not None and old is not None and old != value:
             for alias_path, alias_anchor in list(self._document._aliases.items()):
                 if alias_anchor == old:
                     self._document._aliases[alias_path] = value
@@ -1546,6 +1546,7 @@ def _render_sequence(
     child_indent = indent + config.sequence
     lines: list[str] = []
     for index, child in enumerate(value):
+        child_path = path + (index,)
         rendered = _render_node(document, path + (index,), child, config, child_indent)
         if not _rendered_is_inline(document, child_path, child, rendered):
             lines.append(" " * dash_indent + "-")

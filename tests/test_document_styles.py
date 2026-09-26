@@ -164,3 +164,18 @@ def test_explicit_end_marker_is_reported_and_preserved():
     assert document.explicit_start is True
     assert document.explicit_end is True
     assert document.dump() == "---\na: 1\n...\n"
+
+
+def test_new_document_dumps_block_sequences():
+    document = Document.new({"items": [1, 2], "nested": {"list": ["a", "b"]}})
+    assert document.dump() == (
+        "items:\n  - 1\n  - 2\nnested:\n  list:\n    - a\n    - b\n"
+    )
+
+
+def test_alias_removal_rejected_for_python_side_aliases():
+    document = load_document("base: 1\ncopy: 2\n")
+    document.alias("copy", target=document.node("base"))
+    with pytest.raises(AliasError):
+        document.node("base").anchor = None
+    assert document.dump() == "base: &id001 1\ncopy: *id001\n"
