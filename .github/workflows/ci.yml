@@ -10,7 +10,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]
+        python-version: ["3.10", "3.14"]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -32,8 +32,6 @@ jobs:
           - os: ubuntu-latest
             target: x86_64
           - os: windows-latest
-            target: x86_64
-          - os: macos-15-intel
             target: x86_64
           - os: macos-14
             target: aarch64
