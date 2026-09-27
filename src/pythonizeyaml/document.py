@@ -1935,9 +1935,15 @@ def _render_node(
     config: IndentConfig,
     indent: int,
     flow: bool = False,
+    *,
+    hoist_comments: bool = False,
 ) -> str:
     pad = " " * indent
     comments = document._get_comments(path)
+    if hoist_comments:
+        # The parent renders entry-level before/after comments aligned with
+        # the key line; only the inline comment belongs to the value itself.
+        comments = {**comments, "before": [], "after": []}
     before = [f"{pad}{line}" if line else "" for line in comments.get("before", [])]
     if path in document._aliases:
         core = f"*{document._aliases[path]}"
@@ -2013,13 +2019,20 @@ def _render_mapping(
     child_indent = indent + config.mapping
     for key, child in value.items():
         child_path = path + (key,)
-        rendered = _render_node(document, child_path, child, config, child_indent)
+        child_comments = document._get_comments(child_path)
+        for line in child_comments.get("before", []):
+            lines.append(f"{' ' * indent}{line}" if line else "")
+        rendered = _render_node(
+            document, child_path, child, config, child_indent, hoist_comments=True
+        )
         key_text = _render_scalar(key, _default_scalar_style(key))
         if not _rendered_is_inline(document, child_path, child, rendered):
             lines.append(" " * indent + f"{key_text}:")
             lines.append(rendered)
         else:
             lines.append(" " * indent + f"{key_text}: {rendered}")
+        for line in child_comments.get("after", []):
+            lines.append(f"{' ' * indent}{line}" if line else "")
     return "\n".join(lines)
 
 
@@ -2043,12 +2056,19 @@ def _render_sequence(
     lines: list[str] = []
     for index, child in enumerate(value):
         child_path = path + (index,)
-        rendered = _render_node(document, path + (index,), child, config, child_indent)
+        child_comments = document._get_comments(child_path)
+        for line in child_comments.get("before", []):
+            lines.append(f"{' ' * dash_indent}{line}" if line else "")
+        rendered = _render_node(
+            document, child_path, child, config, child_indent, hoist_comments=True
+        )
         if not _rendered_is_inline(document, child_path, child, rendered):
             lines.append(" " * dash_indent + "-")
             lines.append(rendered)
         else:
             lines.append(" " * dash_indent + f"- {rendered}")
+        for line in child_comments.get("after", []):
+            lines.append(f"{' ' * dash_indent}{line}" if line else "")
     return "\n".join(lines)
 
 

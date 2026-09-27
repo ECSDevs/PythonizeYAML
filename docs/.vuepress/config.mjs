@@ -69,6 +69,7 @@ export default defineUserConfig({
             '/api/',
             '/api/functions',
             '/api/documents',
+            '/api/pydantic',
             '/api/styles',
             '/api/errors'
           ]
@@ -97,6 +98,7 @@ export default defineUserConfig({
             '/zh_CN/api/',
             '/zh_CN/api/functions',
             '/zh_CN/api/documents',
+            '/zh_CN/api/pydantic',
             '/zh_CN/api/styles',
             '/zh_CN/api/errors'
           ]

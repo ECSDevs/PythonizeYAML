@@ -12,7 +12,7 @@ YAML runtime dependency.
 
 ## Comparison with Other YAML Libraries
 
-The table below compares `pythonizeyaml` 0.4.0 with PyYAML, `yamltrip`, and
+The table below compares `pythonizeyaml` 0.5.0 with PyYAML, `yamltrip`, and
 `ruamel.yaml`.
 
 | Area | pythonizeyaml | PyYAML | yamltrip | ruamel.yaml |
@@ -40,7 +40,7 @@ The table below compares `pythonizeyaml` 0.4.0 with PyYAML, `yamltrip`, and
 | Events/nodes | No public scan/parse/event API | Full scanner, parser, composer, node APIs | Tree/query/path API instead | Full event/node APIs |
 | Errors | PyYAML-compatible hierarchy | PyYAML hierarchy | `YAMLTripError` hierarchy | ruamel-specific `YAMLError` hierarchy |
 | Encoding | UTF-8 input through `str`/`bytes`/streams | Several YAML encodings depending on reader | UTF-8 only | Configurable, broad encoding support |
-| Maturity | New 0.4.0 custom implementation | Very mature, widely deployed | Newer focused library, version 0.4.x | Very mature round-trip implementation |
+| Maturity | New 0.5.0 custom implementation | Very mature, widely deployed | Newer focused library, version 0.4.x | Very mature round-trip implementation |
 
 The biggest practical distinctions:
 
@@ -74,6 +74,10 @@ Sources: [PyYAML repository](https://github.com/yaml/pyyaml),
 ```console
 pip install pythonizeyaml
 ```
+
+Optional Pydantic integration: `pip install "pythonizeyaml[pydantic]"` (adds
+`YAMLModel`); add `pip install "pythonizeyaml[pydantic-settings]"` for
+`YAMLSettings`.
 
 For a source checkout:
 
@@ -147,6 +151,8 @@ The module exposes:
 - `load_document`, `load_documents`, `read_document`, and `read_documents`
 - `ScalarStyle`, `CollectionStyle`, `Chomping`, and `SourceSpan`
 - `YAMLError` and its PyYAML-compatible subclasses
+- `YAMLModel`, and with `pydantic-settings` also `YAMLSettings` (optional
+  Pydantic integration)
 
 `Loader=`, `Dumper`, `sort_keys`, `default_flow_style`, `allow_unicode`, and
 `encoding` are accepted for migration compatibility and ignored where they

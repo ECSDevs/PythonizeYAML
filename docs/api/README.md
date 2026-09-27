@@ -14,6 +14,8 @@ The reference is organized as follows:
   its members, the `DocumentMapping` / `DocumentSequence` /
   `DocumentScalar` subclasses, the styling API on values, `Comments`, and
   `DocumentStream`.
+- [Pydantic integration](./pydantic.md) – `YAMLModel` and `YAMLSettings`
+  with byte-for-byte YAML round trips through validation.
 - [Configuration, styles, and tagged values](./styles.md) – `IndentConfig`,
   `DEFAULT_CONFIG`, the style enums, `SourceSpan`, and `Tagged`.
 - [Errors](./errors.md) – the `YAMLError` hierarchy and when each exception

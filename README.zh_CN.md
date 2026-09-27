@@ -8,7 +8,7 @@
 
 ## 与其他 YAML 库的比较
 
-下表对 `pythonizeyaml` 0.4.0 与 PyYAML、`yamltrip` 和 `ruamel.yaml` 进行了比较。
+下表对 `pythonizeyaml` 0.5.0 与 PyYAML、`yamltrip` 和 `ruamel.yaml` 进行了比较。
 
 | 方面 | pythonizeyaml | PyYAML | yamltrip | ruamel.yaml |
 |---|---|---|---|---|
@@ -35,7 +35,7 @@
 | 事件/节点 | 没有公开的 scan/parse/event API | 完整的 scanner、parser、composer、node API | 以 tree/query/path API 替代 | 完整的 event/node API |
 | 错误 | 与 PyYAML 兼容的异常层级 | PyYAML 异常层级 | `YAMLTripError` 异常层级 | ruamel 特有的 `YAMLError` 异常层级 |
 | 编码 | 通过 `str`/`bytes`/流输入 UTF-8 | 由 reader 决定,支持多种 YAML 编码 | 仅 UTF-8 | 可配置,编码支持广泛 |
-| 成熟度 | 全新自研实现的 0.4.0 版本 | 非常成熟,部署广泛 | 较新的专注型库,版本 0.4.x | 非常成熟的往返实现 |
+| 成熟度 | 全新自研实现的 0.5.0 版本 | 非常成熟,部署广泛 | 较新的专注型库,版本 0.4.x | 非常成熟的往返实现 |
 
 最重要的实际差异:
 
@@ -58,6 +58,8 @@
 ```console
 pip install pythonizeyaml
 ```
+
+可选 Pydantic 集成: `pip install "pythonizeyaml[pydantic]"`（提供 `YAMLModel`）; 需要 `YAMLSettings` 时再安装 `pip install "pythonizeyaml[pydantic-settings]"`。
 
 源码检出时:
 
@@ -123,6 +125,7 @@ value = yaml.safe_load("enabled: true\n")
 - `load_document`、`load_documents`、`read_document` 与 `read_documents`
 - `ScalarStyle`、`CollectionStyle`、`Chomping` 与 `SourceSpan`
 - `YAMLError` 及其与 PyYAML 兼容的子类
+- `YAMLModel`，以及安装 `pydantic-settings` 后的 `YAMLSettings`（可选 Pydantic 集成）
 
 `Loader=`、`Dumper`、`sort_keys`、`default_flow_style`、`allow_unicode` 和 `encoding` 为迁移兼容而接受;在与无损输出冲突的地方会被忽略。
 

@@ -6,6 +6,7 @@ PythonizeYAML 提供与 PyYAML 兼容的统一 API。`load()` 与 `load_all()` �
 
 - [加载与导出](./functions.md) —— 模块级函数与 `YAML` / `SafeYAML` 引擎,附完整签名与逐参数说明。
 - [文档与样式编辑](./documents.md) —— `Document` 类及其成员、`DocumentMapping` / `DocumentSequence` / `DocumentScalar` 子类、值上的样式 API、`Comments` 与 `DocumentStream`。
+- [Pydantic 集成](./pydantic.md) —— `YAMLModel` 与 `YAMLSettings`，校验往返逐字节一致。
 - [配置、样式与标签值](./styles.md) —— `IndentConfig`、`DEFAULT_CONFIG`、样式枚举、`SourceSpan` 与 `Tagged`。
 - [错误](./errors.md) —— `YAMLError` 层级及各异常的触发场景。
 

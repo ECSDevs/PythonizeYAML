@@ -20,7 +20,7 @@
 
 [project]
 name = "pythonizeyaml"
-version = "0.4.0"
+version = "0.5.0"
 description = "A YAML library with a PyYAML-compatible API that preserves comments, indentation, and scalar styles across a load/dump round trip."
 readme = "README.md"
 license = { file = "LICENSE" }
@@ -40,6 +40,10 @@ classifiers = [
 ]
 dependencies = []
 
+[project.optional-dependencies]
+pydantic = ["pydantic>=2.5,<3"]
+pydantic-settings = ["pydantic>=2.5,<3", "pydantic-settings>=2.7,<3"]
+
 [project.urls]
 homepage = "https://github.com/ECSDevs/PythonizeYAML"
 repository = "https://github.com/ECSDevs/PythonizeYAML"
@@ -51,6 +55,8 @@ packages = [{ include = "pythonizeyaml", from = "src" }]
 pytest = ">=7.0"
 maturin = ">=1.15,<2"
 pyyaml = "^6.0.3"
+pydantic = ">=2.5,<3"
+pydantic-settings = ">=2.7,<3"
 
 [build-system]
 requires = ["maturin>=1.15,<2"]
@@ -65,5 +71,3 @@ exclude = ["**/__pycache__/**", "**/*.pyc", "rust/target/**"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-
-
