@@ -20,7 +20,7 @@
 
 [package]
 name = "pythonizeyaml-native"
-version = "0.5.0"
+version = "0.6.1"
 edition = "2021"
 rust-version = "1.83"
 license = "MIT"

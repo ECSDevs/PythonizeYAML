@@ -870,15 +870,7 @@ fn collect_edits(
                             return Ok(());
                         }
                         surviving.push(child_id);
-                        collect_edits(
-                            py,
-                            &child,
-                            document,
-                            child_id,
-                            config,
-                            true,
-                            edits,
-                        )?;
+                        collect_edits(py, &child, document, child_id, config, true, edits)?;
                     }
                     // Source entries whose node no longer exists in the data
                     // must be deleted; nothing else emits their lines.
@@ -920,13 +912,25 @@ fn collect_edits(
             if mapping.len() != entries.len() {
                 if suppress_structural {
                     for entry in entries {
-                        let Some(key) =
-                            find_python_key(py, mapping, &document.arena.node(entry.key).kind)?
-                        else {
+                        let key_kind = &document.arena.node(entry.key).kind;
+                        let Some(key) = find_python_key(py, mapping, key_kind)? else {
+                            if is_merge_key(document, entry.key) {
+                                // `<<` resolves into real data entries at
+                                // load, so its absence from the data is the
+                                // resolution, not a removal: keep the source
+                                // entry verbatim.
+                                continue;
+                            }
                             // The entry was removed from the data; delete its
                             // source lines since nothing else emits the removal.
+                            // The entry span ends at the key line, so a block
+                            // value's lines must come from the union with the
+                            // value node's span.
+                            let value_span = document.arena.node(entry.value).span;
+                            let start = entry.entry_span.start.min(value_span.start);
+                            let end = entry.entry_span.end.max(value_span.end);
                             edits.push((
-                                entry_line_range(&document.text, entry.entry_span),
+                                entry_line_range(&document.text, Span::new(start, end)),
                                 String::new(),
                             ));
                             continue;
@@ -949,8 +953,15 @@ fn collect_edits(
                 return Ok(());
             }
             for entry in entries {
-                let Some(key) = find_python_key(py, mapping, &document.arena.node(entry.key).kind)?
-                else {
+                let key_kind = &document.arena.node(entry.key).kind;
+                let Some(key) = find_python_key(py, mapping, key_kind)? else {
+                    if is_merge_key(document, entry.key) {
+                        // A resolved merge entry survives untouched here too:
+                        // the container would otherwise be canonically
+                        // re-emitted, materializing the resolved entries and
+                        // dropping the source `<<` line.
+                        continue;
+                    }
                     edits.push((
                         node.span,
                         canonical_edit(py, value, config, node_base_indent(document, node.span))?,

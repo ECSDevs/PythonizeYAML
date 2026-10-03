@@ -53,6 +53,7 @@ export default defineUserConfig({
             '/guide/',
             '/guide/basics',
             '/guide/editing',
+            '/guide/cli',
             '/guide/styles',
             '/guide/safety'
           ]
@@ -82,6 +83,7 @@ export default defineUserConfig({
             '/zh_CN/guide/',
             '/zh_CN/guide/basics',
             '/zh_CN/guide/editing',
+            '/zh_CN/guide/cli',
             '/zh_CN/guide/styles',
             '/zh_CN/guide/safety'
           ]

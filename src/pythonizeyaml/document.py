@@ -190,7 +190,49 @@ class Document:
         self._explicit_start_override: Optional[bool] = None
         self._explicit_end_override: Optional[bool] = None
         self._root_replaced = False
+        # Source entries removed through the container protocol, as
+        # (parent node id, removed value node id) pairs. They become deletion
+        # patches so a dump drops their lines instead of canonically re-emitting
+        # the parent (which loses nested comments). The pending map stages
+        # pre-removal lookups so a failed removal (missing key) records nothing.
+        self._removals: list[tuple[int, int]] = []
+        self._pending_removals: dict[tuple[int, Any], tuple[int, int]] = {}
         self._prepare_tree()
+        self._snapshot_virtual_entries()
+
+    def _snapshot_virtual_entries(self) -> None:
+        """Record data entries that exist only in the resolved view.
+
+        Merge keys (``<<: *base``) resolve into real entries at load; those
+        entries carry no source node and must never be patched into the text
+        as if the user had added them.
+        """
+        virtual: set[tuple[Any, ...]] = set()
+        if self._handle is not None:
+            stack = [((), self._data)]
+            while stack:
+                path, value = stack.pop()
+                if isinstance(value, dict):
+                    entry_nodes = getattr(value, "_pyy_entry_nodes", None)
+                    if entry_nodes is None:
+                        continue
+                    for key, child in dict.items(value):
+                        pair = entry_nodes.get(key)
+                        if pair is None or int(pair[1]) < 0:
+                            virtual.add(path + (key,))
+                        else:
+                            stack.append((path + (key,), child))
+                elif isinstance(value, list):
+                    node_ids = getattr(value, "_pyy_node_ids", None)
+                    if node_ids is None:
+                        continue
+                    for index, child in enumerate(value):
+                        child_id = int(node_ids[index]) if index < len(node_ids) else -1
+                        if child_id < 0:
+                            virtual.add(path + (index,))
+                        else:
+                            stack.append((path + (index,), child))
+        self._virtual_entries: set[tuple[Any, ...]] = virtual
 
     def _prepare_tree(self) -> None:
         """Bind every round-trip value in the data tree to this document.
@@ -438,6 +480,7 @@ class Document:
         clone._explicit_start_override = self._explicit_start_override
         clone._explicit_end_override = self._explicit_end_override
         clone._root_replaced = self._root_replaced
+        clone._removals = list(self._removals)
         return clone
 
     def _resolved_data(self) -> Any:
@@ -657,8 +700,36 @@ class Document:
         prefix = self._locate(container)
         if prefix is not None:
             self._check_removal_allowed(prefix + (key,))
+            self._stage_removal(container, key)
+
+    def _stage_removal(self, container: Any, key: Any) -> None:
+        """Remember the source identity of a child about to be removed.
+
+        Only scalar keys are tracked: slice deletions and wholesale resets
+        change item positions wholesale and fall back to a canonical re-emit.
+        """
+        if isinstance(key, (slice, list, tuple)):
+            return
+        container_id = getattr(container, "_pyy_node_id", -1)
+        if not isinstance(container_id, int) or container_id < 0:
+            return
+        if isinstance(container, dict):
+            pair = getattr(container, "_pyy_entry_nodes", {}).get(key)
+            value_id = int(pair[1]) if pair is not None else -1
+        elif isinstance(container, list):
+            if not isinstance(key, int) or isinstance(key, bool):
+                return
+            ids = getattr(container, "_pyy_node_ids", [])
+            value_id = int(ids[key]) if 0 <= key < len(ids) else -1
+        else:
+            return
+        if value_id >= 0:
+            self._pending_removals[(id(container), key)] = (container_id, value_id)
 
     def _post_child_removed(self, container: Any, key: Any) -> None:
+        record = self._pending_removals.pop((id(container), key), None)
+        if record is not None:
+            self._removals.append(record)
         prefix = self._locate(container)
         if prefix is None:
             return
@@ -964,18 +1035,43 @@ class Document:
                     stack.append((path + (index,), value[index]))
 
     def _has_style_changes(self) -> bool:
-        return any(
-            (
-                self._styles,
-                self._collection_styles,
-                self._chomping,
-                self._block_indent,
-                self._tags,
-                self._anchors,
-                self._comments,
-                self._aliases,
+        return (
+            any(
+                (
+                    self._styles,
+                    self._collection_styles,
+                    self._chomping,
+                    self._block_indent,
+                    self._tags,
+                    self._anchors,
+                    self._comments,
+                    self._aliases,
+                )
             )
-        ) or self._directives_override is not None or self._explicit_start_override is not None or self._explicit_end_override is not None
+            or self._directives_override is not None
+            or self._explicit_start_override is not None
+            or self._explicit_end_override is not None
+        )
+
+    def _has_dirty_data(self) -> bool:
+        """Whether any round-trip container in the tree was mutated.
+
+        Mirrors the native ``has_dirty`` check. A document that was never
+        mutated dumps verbatim even when its data carries resolved entries the
+        source does not show (merge keys resolve ``<<`` into real entries at
+        load), so virtual additions like those must not be patched in.
+        """
+        stack = [self._data]
+        while stack:
+            value = stack.pop()
+            if getattr(value, "_pyy_dirty", False):
+                return True
+            if isinstance(value, dict):
+                stack.extend(dict.values(value))
+            elif isinstance(value, list):
+                stack.extend(value)
+        return False
+
     def _validate_value_style(self, value: Any, style: Optional[ScalarStyle]) -> None:
         if style is None:
             return
@@ -1066,17 +1162,37 @@ class Document:
         entry = "\n".join(entry_lines)
         keys = list(parent)
         index = keys.index(key)
-        if index > 0:
+        position: Optional[int] = None
+        while index > 0:
             previous = path[:-1] + (keys[index - 1],)
-            previous_span = self._entry_span(previous)
-            position = previous_span[1] if previous_span else int(parent_description["span"][1])
-            current_line_start = self.source.rfind("\n", 0, position) + 1
-            if position > current_line_start:
-                line_end = self.source.find("\n", position)
+            previous_description = self._describe(previous)
+            if previous_description is None:
+                # The previous sibling is itself a Python-created insertion;
+                # keep walking back so chained additions share one position.
+                index -= 1
+                continue
+            # The entry span ends at the key line (through its inline comment)
+            # while the value span carries block children; insertion goes after
+            # both, extended to the end of that line.
+            end = int(previous_description["span"][1])
+            entry_end = self._entry_span(previous)
+            if entry_end is not None:
+                end = max(end, int(entry_end[1]))
+            current_line_start = self.source.rfind("\n", 0, end) + 1
+            if end > current_line_start:
+                line_end = self.source.find("\n", end)
                 position = len(self.source) if line_end < 0 else line_end + 1
-        else:
+            else:
+                position = end
+            break
+        if position is None:
             position = self.source.rfind("\n", 0, int(parent_description["span"][0])) + 1
-        return position, position, entry + "\n"
+        prefix = ""
+        if position >= len(self.source) and self.source and not self.source.endswith("\n"):
+            # The source's last line has no newline of its own; the inserted
+            # entry still starts on a fresh line.
+            prefix = "\n"
+        return position, position, prefix + entry + "\n"
 
     def _new_sequence_item_patch(
         self,
@@ -1103,7 +1219,9 @@ class Document:
         if not isinstance(parent, list):
             return None
         index = path[-1]
-        if not isinstance(index, int) or isinstance(index, bool) or not 0 <= index < len(parent):
+        # ``index == len(parent)`` is an append: the new item goes after the
+        # last existing one, whose dash column and end position anchor it.
+        if not isinstance(index, int) or isinstance(index, bool) or not 0 <= index <= len(parent):
             return None
         child = parent[index]
         dash_indent = self._sequence_dash_indent(parent_path, index)
@@ -1122,6 +1240,15 @@ class Document:
         rendered = "\n".join(rendered_lines)
         if _rendered_is_inline(self, path, child, rendered):
             entry_line = " " * dash_indent + f"- {rendered}"
+        elif (
+            isinstance(child, dict)
+            and rendered.startswith(" " * child_indent)
+            and not rendered.startswith(" " * (child_indent + 1))
+        ):
+            # The sibling that anchored the dash column carries its value on
+            # the dash's line, so match that compact form: the first mapping
+            # entry sits where the "- " ends, the rest keep their indent.
+            entry_line = " " * dash_indent + "- " + rendered[child_indent:]
         else:
             indented = _shift_after_first_line(rendered, 0)
             entry_line = " " * dash_indent + "-\n" + indented
@@ -1130,7 +1257,10 @@ class Document:
         position = self._sequence_insertion_position(parent_path, parent_description, index)
         if position is None:
             return None
-        return position, position, entry + "\n"
+        prefix = ""
+        if position >= len(self.source) and self.source and not self.source.endswith("\n"):
+            prefix = "\n"
+        return position, position, prefix + entry + "\n"
 
     def _sequence_dash_indent(
         self,
@@ -1197,6 +1327,89 @@ class Document:
     ) -> Optional[tuple[int, int, str]]:
         return self._new_node_patch(path, config) or self._new_sequence_item_patch(path, config)
 
+    def _new_node_removal_patch(self, parent_id: int, value_id: int) -> list[tuple[int, int, str]]:
+        """Deletion patches for a removed source entry.
+
+        The entry's full source lines are deleted; when that empties the parent
+        collection it is rendered inline (``key: {}`` / ``key: []``) so the
+        text keeps reading back as an empty collection instead of null.
+        Mirrors the native patcher's own deletion edits (``entry_line_range``
+        over a mapping entry's span, or an item's span in a sequence) so the
+        two dedupe to a single deletion when both are present.
+        """
+        patches: list[tuple[int, int, str]] = []
+        if self._handle is None or not self.source:
+            return patches
+        offsets = self._require_offsets()
+        start: Optional[int] = None
+        end: Optional[int] = None
+        try:
+            parent = _description_in_chars(self._handle.describe(parent_id), offsets)
+        except _native.NativeYamlError:
+            return patches
+        if parent.get("kind") == "mapping":
+            for child in parent.get("children") or ():
+                if int(child.get("value_id", -1)) == value_id:
+                    # The entry span ends at the key line; a block value's
+                    # lines only end with its value span, so delete the union.
+                    spans = [
+                        child.get(name)
+                        for name in ("entry_span", "value_span")
+                        if child.get(name) is not None
+                    ]
+                    if spans:
+                        start = min(int(span[0]) for span in spans)
+                        end = max(int(span[1]) for span in spans)
+                    break
+        else:
+            try:
+                node = _description_in_chars(self._handle.describe(value_id), offsets)
+            except _native.NativeYamlError:
+                return patches
+            start, end = int(node["span"][0]), int(node["span"][1])
+        if start is None or end is None:
+            return patches
+        source = self.source
+        line_start = source.rfind("\n", 0, start) + 1
+        if source[:end].endswith("\n"):
+            line_end = end
+        else:
+            newline = source.find("\n", end)
+            line_end = len(source) if newline < 0 else newline + 1
+        patches.append((line_start, line_end, ""))
+        empty = self._emptied_parent_patch(parent_id)
+        if empty is not None:
+            patches.append(empty)
+        return patches
+
+    def _emptied_parent_patch(self, parent_id: int) -> Optional[tuple[int, int, str]]:
+        """An inline ``{}``/``[]`` render for a collection a removal emptied."""
+        parent_path = self._path_for_node_id(parent_id)
+        if not parent_path:
+            return None  # the document root staying empty reads as null
+        parent = self._at(parent_path)
+        if not isinstance(parent, (dict, list)) or len(parent):
+            return None
+        entry_span = self._entry_span(parent_path)
+        description = self._describe(parent_path)
+        if entry_span is None or description is None:
+            return None
+        key_line_start = self.source.rfind("\n", 0, int(entry_span[0])) + 1
+        key_line_end = self.source.find("\n", int(entry_span[0]))
+        if key_line_end < 0:
+            key_line_end = len(self.source)
+        # Insert before a trailing comment on the key line when there is one.
+        point = key_line_end
+        key_end = self._key_text_end(parent_path, description)
+        if key_end is not None:
+            colon = self.source.find(":", key_end, key_line_end)
+            if colon >= 0:
+                comment = self.source.find(" #", colon + 1, key_line_end)
+                if comment >= 0:
+                    point = comment
+        token = " []" if isinstance(parent, list) else " {}"
+        return (point, point, token)
+
     def _iter_addition_paths(self) -> Iterator[tuple[Any, ...]]:
         """Yield the top-most paths of Python-created nodes.
 
@@ -1221,7 +1434,8 @@ class Document:
                     pair = entry_nodes.get(key)
                     child_id = int(pair[1]) if pair is not None else -1
                     if child_id < 0:
-                        yield path + (key,)
+                        if path + (key,) not in self._virtual_entries:
+                            yield path + (key,)
                     else:
                         stack.append((path + (key,), child))
             elif isinstance(value, list):
@@ -1231,7 +1445,8 @@ class Document:
                 for index, child in enumerate(value):
                     child_id = int(node_ids[index]) if index < len(node_ids) else -1
                     if child_id < 0:
-                        yield path + (index,)
+                        if path + (index,) not in self._virtual_entries:
+                            yield path + (index,)
                     else:
                         stack.append((path + (index,), child))
 
@@ -1277,7 +1492,21 @@ class Document:
             return {"before": [], "inline": None, "after": []}
         entry = self._entry_span(path) or tuple(description.get("span", (0, 0)))
         value_span = tuple(description.get("value_span", entry))
-        return _comments_from_source(self.source, entry, value_span)
+        # Block-valued entries carry their inline comment on the key line and
+        # their after-comments past the value's last line, so both regions are
+        # anchored outside the value span (matching _comment_patches).
+        line_start = self.source.rfind("\n", 0, int(entry[0])) + 1
+        inline_start = self._inline_anchor(path, description, line_start)
+        entry_end = max(int(entry[1]), int(value_span[1]))
+        current_line_start = self.source.rfind("\n", 0, entry_end) + 1
+        if entry_end <= current_line_start:
+            after_start: Optional[int] = entry_end
+        else:
+            line_end = self.source.find("\n", entry_end)
+            after_start = len(self.source) if line_end < 0 else line_end + 1
+        return _comments_from_source(
+            self.source, entry, value_span, inline_start, after_start
+        )
 
     def _set_comment(self, path: tuple[Any, ...], position: str, value: Any) -> None:
         current = self._get_comments(path)
@@ -1416,12 +1645,37 @@ class Document:
                 for path in override_paths
             )
             additions_unpatchable = False
-            if patches and not unsupported_new_paths:
+            # Removals: the native patcher deletes source entries missing from
+            # the data only when external patches exist. Seed the list with the
+            # deletion ranges so a pure removal avoids the canonical re-emit of
+            # the parent (which loses nested comments); the native deletion
+            # edits dedupe against these.
+            if self._removals and self._handle is not None:
+                removal_patches: list[tuple[int, int, str]] = []
+                for parent_id, value_id in self._removals:
+                    removal_patches.extend(self._new_node_removal_patch(parent_id, value_id))
+                # One emptied-container render per insertion point: two
+                # removals emptying the same parent would otherwise insert
+                # `{}` twice.
+                seen: set[tuple[int, int, str]] = set()
+                for patch in removal_patches:
+                    if patch not in seen:
+                        seen.add(patch)
+                        patches.append(patch)
+            if not unsupported_new_paths and (patches or self._has_dirty_data()):
                 # With external patches the native patcher skips Python-created
                 # items instead of rewriting their containers, so every addition
-                # needs an explicit insertion patch here. Deeper insertions come
-                # first: at a shared position an inner item must land inside the
-                # outer item's block.
+                # needs an explicit insertion patch here — including the case
+                # where these are the only changes (otherwise the whole dirty
+                # container is re-emitted canonically, losing sibling comments
+                # and source-specific indentation). A document with no dirty
+                # container and no overrides dumps verbatim, so additions that
+                # only exist in its resolved view (merge keys) are left alone.
+                # Deeper insertions come first: at a shared position an inner
+                # item must land inside the outer item's block. When any
+                # addition cannot be positioned, no patches are sent at all and
+                # the native dirty path handles the additions with a localized
+                # canonical re-emit instead of a full fresh render.
                 addition_patches = []
                 for path in self._iter_addition_paths():
                     if path in override_paths:
@@ -1434,8 +1688,15 @@ class Document:
                 if not additions_unpatchable:
                     addition_patches.sort(key=lambda item: (item[1][0], -item[0]))
                     patches.extend(patch for _, patch in addition_patches)
+            # Without any other patches the native dirty path re-emits only the
+            # containers that changed, additions included, so an unpositionable
+            # addition there is safe. With other patches present the native
+            # patcher would skip Python-created items entirely (dropping the
+            # addition), which forces the full fresh render.
             needs_new_emitter = (
-                self._handle is None or unsupported_new_paths or additions_unpatchable
+                self._handle is None
+                or unsupported_new_paths
+                or (additions_unpatchable and bool(patches))
             )
             if needs_new_emitter:
                 text = self._emit_new(selected, start=start, end=end)
@@ -1589,7 +1850,6 @@ class Document:
         if description is None:
             return []
         entry_span = self._entry_span(path) or tuple(description["span"])
-        value_span = tuple(description["value_span"])
         patches: list[tuple[int, int, str]] = []
         entry_start, entry_end = (int(entry_span[0]), int(entry_span[1]))
         line_start = self.source.rfind("\n", 0, entry_start) + 1
@@ -1599,17 +1859,24 @@ class Document:
             text = "".join(f"{line}\n" for line in before)
             patches.append((start, line_start, text))
         inline = comments.get("inline")
-        if inline is not None:
-            line_end = self.source.find("\n", int(value_span[1]))
-            if line_end < 0:
-                line_end = len(self.source)
-            replacement = f"  {inline}" if inline else ""
-            patches.append((int(value_span[1]), line_end, replacement))
+        # The patch is emitted even for a cleared comment (``inline is None``):
+        # the anchor replaces the whole tail after the value/colon, so an empty
+        # replacement wipes a source comment the user cleared.
+        anchor = self._inline_anchor(path, description, line_start)
+        line_end = self.source.find("\n", anchor)
+        if line_end < 0:
+            line_end = len(self.source)
+        replacement = f"  {inline}" if inline else ""
+        patches.append((anchor, line_end, replacement))
         after = comments.get("after")
         if after is not None:
             next_start = self._next_sibling_start(path)
             if next_start is None:
                 next_start = len(self.source)
+            # The entry extends through its block value, so after-comments
+            # belong past the value's last line — anchoring at the key line
+            # would place (or empty-patch) inside the block.
+            entry_end = max(entry_end, int(description["value_span"][1]))
             current_line_start = self.source.rfind("\n", 0, entry_end) + 1
             if entry_end <= current_line_start:
                 start = entry_end
@@ -1619,6 +1886,64 @@ class Document:
             text = "".join(f"{line}\n" for line in after)
             patches.append((start, next_start, text))
         return patches
+
+    def _inline_anchor(
+        self,
+        path: tuple[Any, ...],
+        description: dict[str, Any],
+        line_start: int,
+    ) -> int:
+        """Where an inline-comment replacement starts for the entry at ``path``.
+
+        The comment replaces the tail of the line that carries the entry. For
+        scalars and flow values that is the value's own line; for block
+        scalars the header line; for block collections the key line right
+        after the colon — anchoring at a block value's span end would land
+        inside or past the block and wipe its content instead of the comment.
+        """
+        value_span = description["value_span"]
+        value_start, value_end = int(value_span[0]), int(value_span[1])
+        value_start_line = self.source.rfind("\n", 0, value_start) + 1
+        if value_start_line == line_start:
+            if self._style_at(path) in (ScalarStyle.LITERAL, ScalarStyle.FOLDED):
+                # Block scalar: the comment rides on the header line after the
+                # indicator, never inside the scalar's content.
+                header_end = self.source.find("\n", line_start)
+                if header_end < 0:
+                    header_end = len(self.source)
+                return _comment_tail_anchor(
+                    self.source[value_start:header_end], value_start, header_end
+                )
+            return value_end
+        key_end = self._key_text_end(path, description)
+        if key_end is not None:
+            search_end = self.source.find("\n", key_end)
+            if search_end < 0:
+                search_end = len(self.source)
+            colon = self.source.find(":", key_end, search_end)
+            if colon >= 0:
+                # Replace only the comment tail: key-line properties (anchors,
+                # tags) between the colon and the comment must survive.
+                return _comment_tail_anchor(
+                    self.source[colon + 1 : search_end], colon + 1, search_end
+                )
+        # Sequence items (and anything without a key span): append at the end
+        # of the entry's first line instead of wiping its tail.
+        entry_line_end = self.source.find("\n", line_start)
+        return len(self.source) if entry_line_end < 0 else entry_line_end
+
+    def _key_text_end(self, path: tuple[Any, ...], description: dict[str, Any]) -> Optional[int]:
+        """The character offset just past the entry's key text, if known."""
+        if not path or self._handle is None:
+            return None
+        node_id = description.get("id")
+        parent_description = self._describe(path[:-1])
+        if node_id is None or parent_description is None:
+            return None
+        for child in parent_description.get("children") or ():
+            if child.get("value_id") == node_id and child.get("key_span") is not None:
+                return int(child["key_span"][1])
+        return None
 
     def _comment_prefix_start(self, line_start: int) -> int:
         cursor = line_start
@@ -1645,8 +1970,13 @@ class Document:
         elif isinstance(parent, list):
             index = int(key)
             if index + 1 < len(parent):
-                span = self._entry_span(path[:-1] + (index + 1,))
-                return span[0] if span else None
+                description = self._describe(path[:-1] + (index + 1,))
+                if description is not None:
+                    # A sequence item's region starts at its dash line, not at
+                    # the value span, so the after-comment insertion keeps the
+                    # next item's dash and indentation intact.
+                    value_start = int(description["span"][0])
+                    return self.source.rfind("\n", 0, value_start) + 1
         return None
 
     def _emit_new(self, config: IndentConfig, *, start: bool, end: bool) -> str:
@@ -1879,11 +2209,35 @@ def _normalize_comment_lines(value: Any) -> list[str]:
     return lines
 
 
+def _comment_tail_anchor(tail: str, tail_start: int, line_end: int) -> int:
+    """The offset where an inline-comment region starts within a line tail.
+
+    Points at an existing `` #`` comment so it gets replaced — including the
+    pure whitespace between the colon and it, so the replacement controls the
+    spacing — or past the non-comment content, so a new comment is appended
+    without touching anchors or tags that share the line.
+    """
+    comment = tail.find(" #")
+    if comment >= 0:
+        if not tail[:comment].strip():
+            return tail_start
+        return tail_start + comment
+    return tail_start + len(tail.rstrip())
+
+
 def _comments_from_source(
     source: str,
     entry_span: tuple[int, int],
     value_span: tuple[int, int],
+    inline_start: Optional[int] = None,
+    after_start: Optional[int] = None,
 ) -> dict[str, Any]:
+    """Extract an entry's comments from the source text.
+
+    ``inline_start`` and ``after_start`` let block-valued entries anchor the
+    inline and after regions outside their value's span (the value of a block
+    collection ends far below the key line where its comment lives).
+    """
     start, end = entry_span
     before_start = source.rfind("\n", 0, start) + 1
     before: list[str] = []
@@ -1898,17 +2252,19 @@ def _comments_from_source(
         cursor = previous_start
     before.reverse()
     value_end = min(max(value_span[1], value_span[0]), len(source))
-    inline_end = source.find("\n", value_end)
+    inline_from = value_end if inline_start is None else max(0, inline_start)
+    inline_end = source.find("\n", inline_from)
     if inline_end < 0:
         inline_end = len(source)
-    inline_text = source[value_end:inline_end].strip()
+    inline_text = source[inline_from:inline_end].strip()
     inline = inline_text if inline_text.startswith("#") else None
     after: list[str] = []
-    current_line_start = source.rfind("\n", 0, end) + 1
-    if end <= current_line_start:
-        cursor = end
+    after_from = end if after_start is None else after_start
+    current_line_start = source.rfind("\n", 0, after_from) + 1
+    if after_from <= current_line_start:
+        cursor = after_from
     else:
-        line_end = source.find("\n", end)
+        line_end = source.find("\n", after_from)
         cursor = len(source) if line_end < 0 else line_end + 1
     while cursor < len(source):
         next_end = source.find("\n", cursor)

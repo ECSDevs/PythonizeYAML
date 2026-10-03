@@ -20,7 +20,7 @@
 
 [project]
 name = "pythonizeyaml"
-version = "0.5.0"
+version = "0.6.1"
 description = "A YAML library with a PyYAML-compatible API that preserves comments, indentation, and scalar styles across a load/dump round trip."
 readme = "README.md"
 license = { file = "LICENSE" }
@@ -47,6 +47,9 @@ pydantic-settings = ["pydantic>=2.5,<3", "pydantic-settings>=2.7,<3"]
 [project.urls]
 homepage = "https://github.com/ECSDevs/PythonizeYAML"
 repository = "https://github.com/ECSDevs/PythonizeYAML"
+
+[project.scripts]
+yaml = "pythonizeyaml.cli:main"
 
 [tool.poetry]
 packages = [{ include = "pythonizeyaml", from = "src" }]

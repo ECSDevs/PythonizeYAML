@@ -8,7 +8,7 @@
 
 ## 与其他 YAML 库的比较
 
-下表对 `pythonizeyaml` 0.5.0 与 PyYAML、`yamltrip` 和 `ruamel.yaml` 进行了比较。
+下表对 `pythonizeyaml` 0.6.1 与 PyYAML、`yamltrip` 和 `ruamel.yaml` 进行了比较。
 
 | 方面 | pythonizeyaml | PyYAML | yamltrip | ruamel.yaml |
 |---|---|---|---|---|
@@ -35,7 +35,7 @@
 | 事件/节点 | 没有公开的 scan/parse/event API | 完整的 scanner、parser、composer、node API | 以 tree/query/path API 替代 | 完整的 event/node API |
 | 错误 | 与 PyYAML 兼容的异常层级 | PyYAML 异常层级 | `YAMLTripError` 异常层级 | ruamel 特有的 `YAMLError` 异常层级 |
 | 编码 | 通过 `str`/`bytes`/流输入 UTF-8 | 由 reader 决定,支持多种 YAML 编码 | 仅 UTF-8 | 可配置,编码支持广泛 |
-| 成熟度 | 全新自研实现的 0.5.0 版本 | 非常成熟,部署广泛 | 较新的专注型库,版本 0.4.x | 非常成熟的往返实现 |
+| 成熟度 | 全新自研实现的 0.6.1 版本 | 非常成熟,部署广泛 | 较新的专注型库,版本 0.4.x | 非常成熟的往返实现 |
 
 最重要的实际差异:
 
@@ -84,6 +84,19 @@ text = yaml.dump(document)
 with open("config.yaml", "w", encoding="utf-8") as handle:
     yaml.dump(document, handle)
 ```
+
+## 命令行
+
+安装 wheel 后会附带一个 `yaml` 命令,可在 shell 中按路径快速编辑文件:
+
+```console
+yaml config.yaml get service.port          # 8080
+yaml config.yaml set service.port 9090     # 只重写该标量
+yaml config.yaml set tls.enabled true      # 自动创建缺失的中间层级
+yaml config.yaml del service.debug
+```
+
+路径以点分隔(`foo.bar.jay`);数字段表示所在位置的序列下标(`servers.0.host`)。`set` 会自动创建缺失的中间映射;值按 YAML 解析——`true` 是布尔值,`123` 是整数,`null` 是空值——加引号(`"'123'"`)可强制为字符串。命令未触及的内容保持原有的注释、缩进和标量风格。详见[命令行一章](https://ecsdevs.github.io/PythonizeYAML/zh_CN/guide/cli.html)。
 
 ## 数值解析
 

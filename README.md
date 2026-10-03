@@ -12,7 +12,7 @@ YAML runtime dependency.
 
 ## Comparison with Other YAML Libraries
 
-The table below compares `pythonizeyaml` 0.5.0 with PyYAML, `yamltrip`, and
+The table below compares `pythonizeyaml` 0.6.1 with PyYAML, `yamltrip`, and
 `ruamel.yaml`.
 
 | Area | pythonizeyaml | PyYAML | yamltrip | ruamel.yaml |
@@ -40,7 +40,7 @@ The table below compares `pythonizeyaml` 0.5.0 with PyYAML, `yamltrip`, and
 | Events/nodes | No public scan/parse/event API | Full scanner, parser, composer, node APIs | Tree/query/path API instead | Full event/node APIs |
 | Errors | PyYAML-compatible hierarchy | PyYAML hierarchy | `YAMLTripError` hierarchy | ruamel-specific `YAMLError` hierarchy |
 | Encoding | UTF-8 input through `str`/`bytes`/streams | Several YAML encodings depending on reader | UTF-8 only | Configurable, broad encoding support |
-| Maturity | New 0.5.0 custom implementation | Very mature, widely deployed | Newer focused library, version 0.4.x | Very mature round-trip implementation |
+| Maturity | New 0.6.1 custom implementation | Very mature, widely deployed | Newer focused library, version 0.4.x | Very mature round-trip implementation |
 
 The biggest practical distinctions:
 
@@ -103,6 +103,27 @@ byte-identical. Pass a writable stream as the second argument to write directly:
 with open("config.yaml", "w", encoding="utf-8") as handle:
     yaml.dump(document, handle)
 ```
+
+## Command Line
+
+Installing the wheel also installs a `yaml` command for quick path-based
+edits from the shell:
+
+```console
+yaml config.yaml get service.port          # 8080
+yaml config.yaml set service.port 9090     # rewrites only that scalar
+yaml config.yaml set tls.enabled true      # creates the missing chain
+yaml config.yaml del service.debug
+```
+
+Paths are dot-separated (`foo.bar.jay`); a numeric segment addresses an item
+of the sequence at that point (`servers.0.host`). `set` creates missing
+intermediate mappings automatically, and values are interpreted as YAML —
+`true` is a boolean, `123` an integer, `null` is null — so quote them
+(`"'123'"`) to force a string. Everything the command does not touch keeps
+its original comments, indentation, and scalar styles. See
+[the CLI chapter](https://ecsdevs.github.io/PythonizeYAML/guide/cli.html)
+for details.
 
 ## Numeric Resolution
 

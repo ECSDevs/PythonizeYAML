@@ -400,3 +400,144 @@ def test_value_resolves_by_identity_even_without_a_handle():
     # own value through the shift.
     assert ref.path == ("items", 2)
     assert ref.value == "two"
+
+
+# -- surgical insertions and removals (no canonical re-render) -----------------
+
+
+def test_new_root_key_after_a_block_valued_sibling_keeps_the_source():
+    source = "# top\nfoo:\n  bar: 1   # keep me\nlist:\n  - a\n  - b\nservers:\n  - host: h1\n"
+    document = load_document(source)
+    document["alpha"] = 1
+    assert document.dump() == source + "alpha: 1\n"
+
+
+def test_a_new_chain_keeps_sibling_comments_and_indentation():
+    source = "# top\nfoo:\n  bar: 1   # keep me\nlist:\n  - a\n  - b\n"
+    document = load_document(source)
+    document["a"] = {"b": {"c": "hello"}}
+    assert document.dump() == source + "a:\n  b:\n    c: hello\n"
+
+
+def test_consecutive_new_keys_keep_their_order():
+    source = "a: 1\nlist:\n  - x\n"
+    document = load_document(source)
+    document["alpha"] = 1
+    document["zzz"] = 2
+    assert document.dump() == source + "alpha: 1\nzzz: 2\n"
+
+
+def test_appending_to_a_sequence_of_mappings_keeps_the_compact_form():
+    source = "servers:\n  - host: h1\n    port: 80\n"
+    document = load_document(source)
+    document["servers"].append({"host": "h2", "port": 81})
+    assert document.dump() == "servers:\n  - host: h1\n    port: 80\n  - host: h2\n    port: 81\n"
+
+
+def test_removing_a_block_valued_entry_keeps_nested_comments():
+    source = "# top\nfoo:\n  bar: 1   # keep me\n  baz: hello\nlist:\n  - a\nservers:\n  - host: h1\n"
+    document = load_document(source)
+    del document["servers"]
+    assert document.dump() == "# top\nfoo:\n  bar: 1   # keep me\n  baz: hello\nlist:\n  - a\n"
+
+
+def test_removal_and_addition_in_one_dump():
+    source = "keep: 1\ndrop:\n  deep: true\n"
+    document = load_document(source)
+    del document["drop"]
+    document["added"] = 2
+    assert document.dump() == "keep: 1\nadded: 2\n"
+
+
+def test_merge_key_resolved_entries_are_not_patched_in():
+    # ``<<`` resolves into real data entries at load; a dump of an untouched
+    # document must stay verbatim, and the resolved entries must never be
+    # patched into the text as if the user had added them. Editing one of the
+    # mapping's own entries keeps the source ``<<`` line and patches only the
+    # edited value.
+    source = "base: &base {x: 1}\nmerged:\n  <<: *base\n  y: 2\n"
+    document = load_document(source)
+    assert document.dump() == source
+    document["merged"]["y"] = 3
+    assert document.dump() == "base: &base {x: 1}\nmerged:\n  <<: *base\n  y: 3\n"
+
+
+# -- inline comments on non-scalar entries -------------------------------------
+
+
+def test_inline_comment_on_a_block_valued_entry_keeps_the_block():
+    document = load_document("foo:\n  bar: 1\n  baz: 2\nlist:\n  - a\n")
+    document["foo"].comments.inline = "# group"
+    assert document.dump() == "foo:  # group\n  bar: 1\n  baz: 2\nlist:\n  - a\n"
+
+
+def test_inline_comment_replaces_an_existing_key_line_comment():
+    document = load_document("foo:  # old\n  bar: 1\n")
+    document["foo"].comments.inline = "# new"
+    assert document.dump() == "foo:  # new\n  bar: 1\n"
+
+
+def test_inline_comment_on_a_scalar_entry_is_unchanged():
+    document = load_document("a: 1   # keep me\nb: 2\n")
+    document["a"].comments.inline = "# changed"
+    assert document.dump() == "a: 1  # changed\nb: 2\n"
+
+
+def test_inline_comment_on_a_block_scalar_lands_on_the_header():
+    document = load_document("desc: |\n  text\n")
+    document["desc"].comments.inline = "# note"
+    dumped = document.dump()
+    assert dumped == "desc: |  # note\n  text\n"
+    assert document.data["desc"] == "text\n"
+
+
+def test_inline_comment_on_a_sequence_item_keeps_the_item():
+    document = load_document("list:\n  - a\n  - b\n")
+    document["list"][0].comments.inline = "# first"
+    assert document.dump() == "list:\n  - a  # first\n  - b\n"
+
+
+def test_removing_the_last_child_of_an_entry_renders_an_empty_collection():
+    document = load_document("a:\n  b:\n    c: 1\n")
+    del document["a"]["b"]["c"]
+    assert document.dump() == "a:\n  b: {}\n"
+    assert document.data == {"a": {"b": {}}}
+
+
+def test_removing_the_last_item_of_a_sequence_renders_an_empty_sequence():
+    document = load_document("list:\n  - only\n")
+    del document["list"][0]
+    assert document.dump() == "list: []\n"
+    assert document.data == {"list": []}
+
+
+def test_removing_entries_from_a_non_empty_parent_adds_no_empty_render():
+    document = load_document("a:\n  b: 1\n  c: 2\n")
+    del document["a"]["c"]
+    assert document.dump() == "a:\n  b: 1\n"
+
+
+def test_inline_comment_on_an_anchored_block_entry_keeps_the_anchor():
+    document = load_document("foo: &f\n  bar: 1\n")
+    document["foo"].comments.inline = "# group"
+    dumped = document.dump()
+    assert dumped == "foo: &f  # group\n  bar: 1\n"
+    assert document.data["foo"] == {"bar": 1}
+
+
+def test_clearing_an_inline_comment_wipes_it():
+    document = load_document("a: 1   # old\nb: 2\n")
+    document["a"].comments.inline = None
+    assert document.dump() == "a: 1\nb: 2\n"
+
+
+def test_clearing_an_inline_comment_on_a_block_entry_wipes_it():
+    document = load_document("foo:  # old\n  bar: 1\n")
+    document["foo"].comments.inline = None
+    assert document.dump() == "foo:\n  bar: 1\n"
+
+
+def test_after_comments_on_a_block_valued_entry_land_past_the_block():
+    document = load_document("foo:\n  bar: 1\nnext: 2\n")
+    document["foo"].comments.after = "# end of foo"
+    assert document.dump() == "foo:\n  bar: 1\n# end of foo\nnext: 2\n"

@@ -16,9 +16,11 @@ read like PyYAML code.
    objects, and the round-trip guarantee.
 2. [Editing values](./editing.md) - paths, assignment, `set()`, sequences,
    and building documents from scratch.
-3. [Comments, styles, tags, and anchors](./styles.md) - the style-aware
+3. [Command line](./cli.md) - the `yaml` shell command for path-based
+   `get`/`set`/`del` edits.
+4. [Comments, styles, tags, and anchors](./styles.md) - the style-aware
    editing layer carried by the values themselves.
-4. [Loading untrusted YAML](./safety.md) - `safe_load()`, `Tagged`, and the
+5. [Loading untrusted YAML](./safety.md) - `safe_load()`, `Tagged`, and the
    error model at a trust boundary.
 
 When you want complete, runnable projects instead of isolated snippets, see

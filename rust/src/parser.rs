@@ -563,7 +563,11 @@ impl<'a> Parser<'a> {
         indent: usize,
         first_col: Option<usize>,
     ) -> Result<(NodeId, usize)> {
-        let map_start = first_col.unwrap_or_else(|| self.col_global(li, indent));
+        // `first_col` is a column on line `li` (the compact-item callers pass
+        // one), so it must become a global offset here; using it raw made the
+        // mapping's span start at a bogus small offset for any item whose line
+        // was not the first line of the document.
+        let map_start = self.col_global(li, first_col.unwrap_or(indent));
         let mut entries = Vec::new();
         while li < end {
             if self.is_trivia(li) {
@@ -3472,6 +3476,44 @@ mod tests {
             panic!("expected sequence");
         };
         assert_eq!(scalar_value(&document, items[0]), "x\ny");
+    }
+
+    #[test]
+    fn sequence_item_mapping_spans_are_global_offsets() {
+        // A mapping that is a sequence item starts at its first key on the
+        // dash's line; the item column must become a global offset, not be
+        // used raw, and each item's span must stay inside the source.
+        let source = "servers:\n  - host: h1\n    port: 80\n";
+        let (document, root) = parse_root(source);
+        let NodeKind::Mapping(entries) = &document.arena.node(root).kind else {
+            panic!("expected mapping root");
+        };
+        let NodeKind::Sequence(items) = &document.arena.node(entries[0].value).kind else {
+            panic!("expected sequence");
+        };
+        let item_span = document.arena.node(items[0]).span;
+        let host = source.find("host").unwrap();
+        let item_end = source.find("port: 80").unwrap() + "port: 80".len();
+        assert_eq!(item_span.start, host);
+        assert_eq!(item_span.end, item_end);
+
+        // A second item must not inherit the first item's offsets, and no
+        // span may point past the end of the source.
+        let source = "- host: h1\n  port: 80\n- host: h2\n";
+        let (document, root) = parse_root(source);
+        let NodeKind::Sequence(items) = &document.arena.node(root).kind else {
+            panic!("expected sequence");
+        };
+        let first = document.arena.node(items[0]).span;
+        let second = document.arena.node(items[1]).span;
+        assert_eq!(first.start, source.find("host").unwrap());
+        assert_eq!(
+            first.end,
+            source.find("port: 80").unwrap() + "port: 80".len()
+        );
+        assert_eq!(second.start, source.rfind("host").unwrap());
+        assert_eq!(second.end, source.len() - 1);
+        assert!(second.end <= source.len());
     }
 
     #[test]
